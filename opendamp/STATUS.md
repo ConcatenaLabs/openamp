@@ -6,7 +6,8 @@ construction) of `doc/sequentia/opendamp-design.md` in the Sequentia
 repository. M2 (policy service in the operator daemon, `enforcement` election
 through issuance, registry validation) is not in scope.
 
-Nothing here is deployed to any live chain.
+Two network-enforced assets (NEPLT, NEPL2) have been issued on the public
+testnet through `openampd`; see the README's "Network-enforced issuance".
 
 **The headline: every predicate the design document specifies for the covenant is
 enforced by consensus — confinement, the whitelist, the blacklist, the transfer
@@ -309,8 +310,8 @@ above improves with it.
 cargo test --test regtest -- --ignored --nocapture
 ```
 
-It spawns `/home/aejkohl/Sequentia/src/sequentiad` (override with
-`OPENDAMP_NODE_BIN`) on `elementsregtest` with `-evbparams=simplicity:-1:::`,
+It spawns the node named by `OPENDAMP_NODE_BIN` (default
+`../Sequentia/src/sequentiad`, a node checkout beside this one) on `elementsregtest` with `-evbparams=simplicity:-1:::`,
 `-anyonecanspendaremine=1`, `-initialfreecoins=…`,
 `-con_default_blinded_addresses=0`, and asserts `getdeploymentinfo` reports
 simplicity **active before any 0xbe output is funded** — an unenforced Simplicity
@@ -322,12 +323,12 @@ using the Elements one-to-one rule these covenants are unspendable, and
 `attach_verifier` says so by name rather than emitting a transaction the node
 would reject.
 
-**On the live testnet that budget starts at height 101,200** (Sequentia Core
-24.3.0, `consensus.simplicity_budget4_height`). The rule only ever accepts more,
+**On the live testnet that budget starts at height 101,810** (Sequentia Core
+24.3.0, `consensus.simplicity_budget4_height`, bound to the testnet genesis). The rule only ever accepts more,
 so the gate is a flag day for the operators of a running chain rather than a
 correctness requirement; regtest and mainnet have it from genesis, which is why
 this suite is unaffected. The consequence for M4: **do not fund an OpenDAMP
-covenant on the live testnet below 101,200.** The builder cannot catch it,
+covenant on the live testnet below 101,810.** The builder cannot catch it,
 because it mirrors the post-activation rule -- it would produce a transaction
 the node rejects for want of budget.
 
@@ -455,4 +456,4 @@ Nothing in the covenant. What is left is integration and operations.
    covenant address. `getdeploymentinfo` must report simplicity active, because
    an unenforced 0xbe leaf is anyone-can-spend. And the chain must be granting
    four weight units per witness byte: Sequentia Core 24.3.0, and on the live
-   testnet **from height 101,200**, not before.
+   testnet **from height 101,810**, not before.
