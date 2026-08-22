@@ -70,7 +70,7 @@ An enclave output for holder key `K_user` is the taproot output:
 
 Witness stack for either leaf, bottom to top: `<policy signature> <user-or-issuer signature> <leaf script> <control block>`. Signatures are BIP340 Schnorr over the Elements taproot sighash (`SIGHASH_DEFAULT`). The policy signature is produced by the FROST quorum and verifies under the single x-only `K_policy` (the group public key), so the enclave script is unchanged whether the policy key is a software key or a threshold.
 
-For a confidential asset the enclave output additionally carries a blinding public key in its nonce, and its amount and asset are committed rather than explicit; the taproot scriptPubKey (and hence the script tree) is identical.
+When a transfer is blinded, the enclave output additionally carries a blinding public key in its nonce, and its amount and asset are committed rather than explicit; the taproot scriptPubKey (and hence the script tree) is identical.
 
 Issuance mints directly into enclave outputs. The reissuance token is issuer-held and outside the enclave; issuer tooling must keep custody of it and mint only into enclave outputs.
 
@@ -80,4 +80,4 @@ A restricted asset never appears in a fee output. The policy server refuses to c
 
 ## 6. Reserved
 
-The FROST DKG parameters, the confidential-asset blinding-key handshake, and the SeqDEX registered-user settlement format are specified with M5.
+The FROST DKG parameters, the per-transfer blinding-key handshake, and the SeqDEX registered-user settlement format are specified with M5.
