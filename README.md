@@ -322,7 +322,7 @@ Run against a node:
 
 ```sh
 ./openampd/openampd \
-  -rpc http://127.0.0.1:7041 \
+  -rpc http://127.0.0.1:18776 \
   -rpcauth user:pass \            # or cookie:/path/to/.cookie
   -rpcwallet mywallet \
   -issuertoken <long-random-token> \
@@ -335,7 +335,7 @@ Run against a node:
 |---|---|---|
 | `-listen` | `127.0.0.1:8722` | HTTP listen address |
 | `-datadir` | `~/.openampd` | state directory (`state.json`, `keys.json` 0600, `transparency.log`) |
-| `-rpc` | `http://127.0.0.1:7041` | `sequentiad` RPC URL (the public testnet node listens on 18776) |
+| `-rpc` | `http://127.0.0.1:18776` | `sequentiad` RPC URL (the node's RPC port on chain `test`) |
 | `-rpcauth` | (required) | `user:pass` or `cookie:<path>` |
 | `-rpcwallet` | (none) | wallet name, appended as `/wallet/<name>` |
 | `-issuertoken` | (none) | bearer token gating `/v1/issuer/*`; empty locks the issuer API |

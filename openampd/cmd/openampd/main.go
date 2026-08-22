@@ -21,7 +21,7 @@ func main() {
 	var (
 		listen      = flag.String("listen", "127.0.0.1:8722", "HTTP listen address")
 		datadir     = flag.String("datadir", defaultDatadir(), "state directory")
-		rpcURL      = flag.String("rpc", "http://127.0.0.1:7041", "elementsd RPC URL")
+		rpcURL      = flag.String("rpc", "http://127.0.0.1:18776", "Sequentia node (sequentiad) RPC URL")
 		rpcAuth     = flag.String("rpcauth", "", "user:pass or cookie:<path>")
 		rpcWallet   = flag.String("rpcwallet", "", "wallet name (appended as /wallet/<name>)")
 		issuerToken = flag.String("issuertoken", "", "bearer token for issuer endpoints")
