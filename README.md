@@ -14,6 +14,8 @@ Design document: [`doc/sequentia/openamp-design.md`](https://github.com/GracedEt
   curl -s https://sequentiatestnet.com/openamp/v1/assets
   ```
 
+  Two network-enforced (OpenDAMP) assets, **NEPLT** and **NEPL2**, have since been issued on the public testnet through the same instance (`"enforcement": "damp"` in their contracts).
+
 - Working today (committed code): registration, enclave addresses and balances, hosted transfers with fee conversion or sponsorship, raw co-signing of self-built transactions, hosted issuance (demo mode) with optional blinded minting, per-transfer opt-in confidentiality end to end (blinded or explicit transfers of any asset, mixed explicit+blinded enclave sets, watch-wallet unblinding), freezes, categories, per-asset rules (velocity, holder cap, lock-in, vesting), clawback, ownership reports, transparency log with on-chain anchoring, and a reorg-aware chain follower.
 - Also committed and running on the live testnet: the FROST threshold backend for the policy key (`-signer frost`), with distributed key generation and a transport seam for running the quorum across hosts. Its members are separate roles in one process today, which is a deployment posture rather than a protocol limitation — see "Trust model" below.
 
@@ -44,6 +46,8 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid) |
 | `GET /v1/assets` | All assets with their contracts |
 | `GET /v1/assets/{id}` | One asset |
+| `GET /v1/supply?asset=<id>` | Chain-derived circulating supply: `{"asset", "circulating_atoms", "height"}` |
+| `GET /v1/snapshots?asset=<id>[&seq=<n>]` | Published policy snapshots (network-enforced assets; latest, or one by `seq`) |
 | `GET /v1/log` | The transparency log (JSON lines) |
 
 **`POST /v1/users`**, body `{"pubkeys": ["<x-only hex>", ...]}`, response `{"aid": "<40-char hex>"}`. The AID is `sha256("openamp-aid-v1" || sorted pubkey hex)` truncated to 20 bytes. Registering the same key set twice returns the same AID. `pubkeys[0]` is the active enclave key.
@@ -80,7 +84,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
  "convert_atoms": 100, "fee_sats": 1000}
 ```
 
-The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending transfers expire after 15 minutes.
+The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending transfers, burns and clawbacks expire after 72 hours.
 
 **`POST /v1/transfers/{id}/complete`**, body `{"sigs": {"<input index>": "<64-byte schnorr sig hex>"}}`. The server verifies the holder's signatures, runs the policy engine, attaches the policy signatures and its own fee-input signature, broadcasts, and returns `{"txid": "..."}`. A policy refusal returns 403 with the reason.
 
@@ -113,7 +117,15 @@ Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <lea
 | `POST /v1/issuer/freeze` | Freeze or unfreeze a user |
 | `POST /v1/issuer/categories` | Set a user's categories |
 | `POST /v1/issuer/rules` | Replace an asset's policy rules |
-| `POST /v1/issuer/clawback` | Claw back a holder's enclave UTXOs |
+| `POST /v1/issuer/clawback` | Claw back a holder's enclave UTXOs (phase 1 when the issuer key is external) |
+| `POST /v1/issuer/clawback/{id}/complete` | Phase 2: submit the issuer's signatures, co-sign and broadcast |
+| `POST /v1/issuer/burn` | Build a redeem burn of a holder's units to an OP_RETURN output (completed through `POST /v1/transfers/{id}/complete`) |
+| `POST /v1/issuer/reissue` | Mint more of an existing asset into a target enclave (idempotent by `request_id`) |
+| `POST /v1/issuer/snapshots` | Publish a signed policy snapshot (network-enforced assets) |
+| `POST /v1/issuer/pledges` | Lock a holder's units in place as loan collateral |
+| `GET /v1/issuer/pledges` | List pledges |
+| `POST /v1/issuer/pledges/{id}/release` | Debt settled: free the collateral (lender-signed) |
+| `POST /v1/issuer/pledges/{id}/seize` | Default: move the collateral to the lender (lender-signed) |
 | `GET /v1/issuer/holders?asset=<id>` | Ownership report |
 | `POST /v1/issuer/anchor` | Anchor the transparency-log head on-chain |
 | `POST /v1/issuer/rotate-blinding` | Rotate an asset's blinding-key epoch and re-import every holder's key |
@@ -135,7 +147,7 @@ Mints directly into the initial holder's enclave; `clawback` defaults to true an
 
 #### Network-enforced issuance (OpenDAMP)
 
-A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer, because the blacklist, the transfer limit and the height windows are **not** consensus-enforced in this build, and the whitelist is receive-side only.
+A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer. Since the 2026-08-19 review every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
 
 Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing at the CMR pinning file `opendamp registry` produces (`opendamp/vectors/addresses.json` is a valid input). Unset, every network-enforcement endpoint answers `501 {"error": "network enforcement is not configured on this policy server"}`. Unlike hosted issuance this needs **no** `-demoissuer`: no issuer private key is held server-side, because `issuer_update_key` is the issuer's own key and this server never signs a transfer of the asset.
 
@@ -175,7 +187,7 @@ The contract's `openamp` block gains `"enforcement": "damp"`, `verifier_asset`, 
 
 The genesis snapshot is published at seq 0 through the ordinary snapshot store, so `GET /v1/snapshots?asset=<id>` serves it like any other. Its `tree` is `dmt-v1`, the format the deployed covenants actually verify against, and a `dmt-v1` snapshot's `pi` is the covenant's own commitment (internal-order asset bytes, the covenant `rules_root`) It carries BOTH list predicates, because the covenant reads both: a whitelist root over recipient keys and a blacklist root over frozen outpoints. The genesis blacklist is **empty but not absent** — the empty interval tree still has a root (its guard interval), so "freeze nothing" is a commitment like any other and a missing root is a malformed policy rather than a permissive one. Blacklist entries are `SHA256(txid || BE32(vout))` with the txid in **internal** (consensus) byte order, not the reversed display form. Later policy versions go through `POST /v1/issuer/snapshots` and require the issuer signature as always.
 
-**Transaction shape limits are part of the covenant.** The deployed verifier program bounds its scan at `N_max_outputs = 6` and `N_max_inputs = 4`, so a single transfer may spend at most **two** UTXOs of the asset. That is a real operational constraint on a holder with fragmented coins, and it is committed into the program identity, so it cannot be raised for an asset already issued against it. The current bounds are pinned in `opendamp/vectors/addresses.json` under `programs`.
+**Transaction shape limits are part of the covenant.** The verifier program is compiled once per transaction shape and every shape is a leaf of the same taptree: the canonical leaf is `p3x5` (3 inputs, 5 outputs, one regulated input) and the menu runs through `p3x4` and `p4x6` to `p5x7` (5 inputs, 7 outputs, three regulated inputs), so a single transfer may spend at most **three** UTXOs of the asset. That is a real operational constraint on a holder with fragmented coins, and it is committed into the program identity, so it cannot be widened for an asset already issued against it. The shapes and their bounds are pinned in `opendamp/vectors/addresses.json` under `programs.verifier_shapes`.
 
 ### Policy updates: the freeze path for a network-enforced asset
 
@@ -222,7 +234,9 @@ All fields optional; zero/empty means no restriction.
 
 **`POST /v1/issuer/freeze`**: `{"aid": "...", "frozen": true}`. **`POST /v1/issuer/categories`**: `{"aid": "...", "categories": ["accredited"]}`.
 
-**`POST /v1/issuer/clawback`**: `{"asset": "<id>", "holder_aid": "...", "reason": "<required>"}`. The reason is written to the public transparency log before the transaction is signed; the seized funds move to the issuer's enclave through the disclosed clawback leaf. Response: `{"txid", "atoms"}`. Fails for assets issued without a clawback leaf.
+**`POST /v1/issuer/clawback`**: `{"asset": "<id>", "holder_aid": "...", "reason": "<required>"}`. The reason is written to the public transparency log before the transaction is signed; the seized funds move to the issuer's enclave through the disclosed clawback leaf. Fails for assets issued without a clawback leaf. Response: `{"txid", "atoms"}` when the server holds the issuer key (`-demoissuer`). For an asset whose issuer key is external (every asset issued through SeqPal) the call is phase 1 and returns `{"id", "tx", "to_sign": [{"input", "sighash", "pubkey"}], "atoms"}`; the issuer signs each sighash with its entity key and posts `{"sigs": {"<input index>": "<sig hex>"}}` to **`POST /v1/issuer/clawback/{id}/complete`**, which adds the policy signature, broadcasts and returns `{"txid"}` (a replay returns the same txid with `"idempotent": true`).
+
+**Pledges (collateral).** A restricted asset cannot be moved into a lending covenant without leaving its enclave, so collateral for a loan is locked *in place*: **`POST /v1/issuer/pledges`** `{"asset", "holder_aid", "lender_aid", "atoms", "debt_asset", "debt_atoms", "maturity_height", "note"}` records the pledge and the policy engine keeps those atoms unspendable by the holder. The issuer token alone cannot move value: **`/release`** `{"repaid_txid", "lender_sig"}` needs the lender's signature (or `"force": true` with a logged `reason`, which only ever returns the collateral to its owner), and **`/seize`** `{"reason", "lender_sig", "holder_sig"}` needs the lender's signature plus either a matured loan or the holder's countersignature. Signatures are BIP340 over `sha256("openamp-pledge|<action>|<id>|<extra>")`, never a taproot sighash. A seizure is a clawback-leaf spend paying the pledged atoms to the lender's enclave and the rest back to the holder; with an external issuer key it is two-phase like a clawback and completes through `POST /v1/issuer/clawback/{id}/complete`.
 
 **`GET /v1/issuer/holders?asset=<id>`** returns `{"asset", "height", "holders": {"<aid>": atoms}, "total_atoms"}` from a confirmed UTXO-set scan.
 
@@ -283,7 +297,7 @@ The same flow, driven programmatically against a regtest node, is the committed 
 
 ## How openampd uses the Sequentia node
 
-`openampd` needs one Sequentia node (`elementsd`) with a funded wallet and nothing else; there are no consensus changes, no patched node, no indexer. RPC usage:
+`openampd` needs one Sequentia node (`sequentiad`) with a funded wallet and nothing else; there are no consensus changes and no patched node. An explorer (electrs) instance is optional: it is only the prevout fallback for `POST /v1/cosign` when the node runs without `-txindex`. RPC usage:
 
 - chain queries: `getblockcount`, `getblockhash`, `getblock` (follower), `gettxout` (prevout resolution), `scantxoutset` (enclave balances and holder reports), `decodescript` (address rendering), `dumpassetlabels` (fee-asset default);
 - wallet operations: `listunspent`, `getnewaddress`, `getaddressinfo`, `signrawtransactionwithwallet`, `sendrawtransaction`, and `createrawtransaction` + `fundrawtransaction` for log anchors.
@@ -321,7 +335,7 @@ Run against a node:
 |---|---|---|
 | `-listen` | `127.0.0.1:8722` | HTTP listen address |
 | `-datadir` | `~/.openampd` | state directory (`state.json`, `keys.json` 0600, `transparency.log`) |
-| `-rpc` | `http://127.0.0.1:7041` | elementsd RPC URL |
+| `-rpc` | `http://127.0.0.1:7041` | `sequentiad` RPC URL (the public testnet node listens on 18776) |
 | `-rpcauth` | (required) | `user:pass` or `cookie:<path>` |
 | `-rpcwallet` | (none) | wallet name, appended as `/wallet/<name>` |
 | `-issuertoken` | (none) | bearer token gating `/v1/issuer/*`; empty locks the issuer API |
@@ -330,6 +344,7 @@ Run against a node:
 | `-demoissuer` | off | hold issuer keys server-side (testnet demo only) |
 | `-signer` | `local` (`OPENAMPD_SIGNER`) | policy-key backend: `local` (one key per asset) or `frost` (2-of-3 threshold quorum, DKG-generated keys; `OPENAMPD_FROST_KEYGEN=dealer` reverts to the trusted-dealer split) |
 | `-dampregistry` | (none) | path to the OpenDAMP CMR pinning file (`OPENAMPD_DAMP_REGISTRY`); unset disables network enforcement |
+| `-electrs` | `http://127.0.0.1:3003` (`OPENAMPD_ELECTRS_URL`) | explorer (electrs) base URL; prevout fallback for `/v1/cosign` when the node lacks `-txindex` |
 | `-follow` | `2s` | chain follower poll interval |
 
 Production deployment (systemd unit, Caddy reverse proxy, secrets handling): [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
@@ -340,19 +355,36 @@ Production deployment (systemd unit, Caddy reverse proxy, secrets handling): [`d
 openampd/cmd/openampd/      the daemon (flags, wiring, chain follower start)
 openampd/cmd/keygen/        demo BIP340 keypair generator
 openampd/cmd/signer/        demo client-side sighash signer
+openampd/cmd/seqpald/       the superseded M0 SeqPal gateway (see below)
 openampd/internal/server/   HTTP API, policy engine, issuance, transfers,
-                            clawback, PolicySigner seam, chain follower
+                            clawback, pledges, snapshots, PolicySigner seam,
+                            chain follower
+openampd/internal/server/frostsigner/  the FROST 2-of-3 policy-key backend
+                            (DKG, signing, Member/Transport seam)
+openampd/internal/damp/     OpenDAMP policy commitment (pi), dmt-v1 tree,
+                            snapshot document format
 openampd/internal/elements/ minimal Elements tx codec, taproot, sighash
                             (golden-vectored; see tools/gen_vectors.py)
 openampd/internal/fastmerkle/  issuance entropy and asset/token id derivation
-openampd/internal/rpc/      minimal JSON-RPC client for elementsd
+openampd/internal/rpc/      minimal JSON-RPC client for sequentiad
 openampd/internal/store/    JSON state store, 0600 key file, transparency log
-spec/                       frozen formats (contract v1)
-deploy/                     systemd unit + deploy runbook
+openampd/docs/              design notes (blinding-key rotation, the M2
+                            snapshot service)
+opendamp/                   the Rust crate: SimplicityHL covenant programs
+                            (programs/*.simf), the opendamp CLI, the regtest
+                            proof (tests/regtest.rs), the CMR pinning file
+                            (vectors/addresses.json) and a Go mirror of the
+                            dmt-v1 tree (gomirror/); start with
+                            opendamp/STATUS.md and opendamp/SPEC-dmt-v1.md
+spec/                       frozen formats (contract v1) and the venue/wallet
+                            integration specification
+deploy/                     systemd units + deploy runbook
 tools/gen_vectors.py        golden-vector generator (runs against the node
                             repo's functional-test framework)
 vendor/                     vendored Go dependencies (offline builds)
 ```
+
+`openampd/cmd/seqpald/` and `deploy/seqpald.service` are the original M0 SeqPal gateway (four routes, port 8724) and are superseded: the `seqpald` that runs today lives in the [`SeqPal`](https://github.com/GracedEternalKingCabbageMan/SeqPal) repository (its own database, escrow and ~80 routes, port 8730; see `seqpald/DEPLOY.md` there). They are kept for the record and are not what the box runs.
 
 Regenerating the golden vectors (needs a checkout of the node repository):
 
@@ -372,7 +404,7 @@ go test ./openampd/internal/elements
 
 | Repo | One-liner |
 |---|---|
-| [`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) | The Sequentia node (`elementsd` fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
+| [`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) | The Sequentia node (Sequentia Core, `sequentiad`; a fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
 | [`sequentia-registry`](https://github.com/GracedEternalKingCabbageMan/sequentia-registry) | Sequentia Asset Registry service (asset metadata). |
 | [`SWK`](https://github.com/GracedEternalKingCabbageMan/SWK) | Sequentia Wallet Kit: a fork of Blockstream LWK, providing a Rust wallet library, CLI, and WASM bindings for building Sequentia (and Bitcoin testnet4) wallets. |
 | [`ambra`](https://github.com/GracedEternalKingCabbageMan/ambra) | Ambra: non-custodial dual-chain (Bitcoin testnet4 + Sequentia) mobile wallet, a Flutter UI over a Rust core built on SWK. |

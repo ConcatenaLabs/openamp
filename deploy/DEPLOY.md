@@ -31,10 +31,21 @@ OPENAMPD_RPCAUTH=<rpcuser>:<rpcpassword>       # or cookie:/root/.../.cookie
 OPENAMPD_WALLET=treasury-clean
 OPENAMPD_ISSUER_TOKEN=<long-random-token>       # gates the issuer API
 OPENAMPD_FEE_ASSET=<display-hex of tSEQ or USDX>   # the asset openampd pays fees in
+OPENAMPD_SIGNER=frost                           # policy-key backend; omit for `local`
+OPENAMPD_DAMP_REGISTRY=/root/sequentia/openamp/opendamp/vectors/addresses.json
+                                                # OpenDAMP CMR pinning file; omit to
+                                                # answer 501 on every damp endpoint
+OPENAMPD_ELECTRS_URL=http://127.0.0.1:3003      # explorer base URL (default shown);
+                                                # prevout fallback without -txindex
 ```
 
 The fee asset must be one the testnet producers accept (on their
 `setfeeexchangerates` whitelist). tSEQ (the policy asset) always works.
+
+The unit passes none of the last three as flags; `openampd` reads them from
+the environment, so the env file is the only place they need to be set. The
+public instance runs the FROST backend and has issued network-enforced assets,
+which needs the first two.
 
 ## 3. Install and start the service
 
@@ -87,17 +98,16 @@ Transfers then go through `POST /v1/transfers` (fee convert/sponsor) or
 returned sighashes; the full API and an end-to-end walkthrough are in the
 top-level [README](../README.md).
 
-## Confidential assets
+## Per-transfer confidentiality
 
-To issue a `confidential: true` asset (blinded amounts/asset tags on-chain,
-server-held blinding keys), the funding wallet must emit confidential
-addresses, i.e. the node runs with `-blindedaddresses=1` (or the wallet is
-otherwise CT-enabled). openampd derives the enclave blinding keys itself and
-keeps them in a `openampd-watch` node wallet, but the wallet's own fee-change
-and token outputs are blinded by the wallet, so it must be CT-capable. A node
-with `-blindedaddresses=0` can still run every transparent-asset flow; only
-confidential issuance/transfer needs CT addresses. The end-to-end confidential
-flow is proven in `feature_openamp_confidential.py` (node repo).
+There are no confidential assets. Any transfer, burn, mint or reissue may pass
+`confidential: true`; it blinds that transaction only and marks nothing about
+the asset. openampd derives the enclave blinding keys itself and keeps them in
+an `openampd-watch` node wallet, so the enclave side needs no node flag. The
+funding wallet must be able to produce blinded change for its own fee-change
+and token outputs, which every Sequentia wallet can do per call
+(`-blindedaddresses=1` is not required). The end-to-end flow is proven in
+`feature_openamp_confidential.py` (node repo).
 
 ## 6. Redeploy
 
@@ -111,5 +121,8 @@ State (registry, keys, transparency log) persists in
 and co-sign autonomously. That is appropriate ONLY for the testnet demo. A
 production issuer keeps the issuer key offline and runs the policy key behind
 a FROST threshold (or MPC/HSM) backend; the `PolicySigner` interface in
-`openampd/internal/server/signer.go` is the seam for that. The threshold
-backend itself is not implemented in this repository yet (design doc §5, M5).
+`openampd/internal/server/signer.go` is the seam for that. The FROST 2-of-3
+backend ships (`-signer frost`, `OPENAMPD_SIGNER=frost`) and is what the
+public instance runs; its members share one host today, so it guards against
+a signing-path bug rather than host compromise — see "Trust model" in the
+top-level README.

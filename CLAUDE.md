@@ -2,7 +2,7 @@
 
 `openampd`: a Go daemon that issues and polices issuer-governed restricted assets on Sequentia,
 a self-hostable equivalent of Blockstream's AMP2. It requires **zero consensus changes** — it
-talks to an ordinary Sequentia node (`elementsd`) over JSON-RPC, and enforcement lives in
+talks to an ordinary Sequentia node (`sequentiad`) over JSON-RPC, and enforcement lives in
 taproot script plus the policy server's signature.
 
 `README.md` is the reference for the REST API, the trust model and the flag table. Read it
@@ -32,10 +32,15 @@ from GitHub and builds there — never edit source on the server, never copy bin
 |---|---|
 | `openampd/cmd/openampd/` | the daemon |
 | `openampd/cmd/keygen`, `cmd/signer` | demo client helpers |
-| `openampd/internal/server/` | HTTP API, policy engine, issuance, transfers, clawback, chain follower |
+| `openampd/cmd/seqpald/`, `deploy/seqpald.service` | the superseded M0 SeqPal gateway; the live `seqpald` is in the `SeqPal` repo |
+| `openampd/internal/server/` | HTTP API, policy engine, issuance, transfers, clawback, pledges, snapshots, chain follower |
+| `openampd/internal/server/frostsigner/` | the FROST 2-of-3 policy-key backend (DKG, `Member`/`Transport` seam) |
+| `openampd/internal/damp/` | OpenDAMP policy commitment, dmt-v1 tree, snapshot documents |
 | `openampd/internal/elements/` | minimal Elements tx codec, taproot, sighash — golden-vectored |
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
-| `spec/` | frozen formats (contract v1) |
+| `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
+| `opendamp/` | Rust crate: the Simplicity covenants, `opendamp` CLI, regtest proof, CMR pinning file; read `STATUS.md` and `SPEC-dmt-v1.md` first |
+| `spec/` | frozen formats (contract v1), venue/wallet integration spec |
 | `tools/gen_vectors.py` | golden-vector generator |
 
 ## Things that are expensive to get wrong
@@ -60,9 +65,10 @@ from GitHub and builds there — never edit source on the server, never copy bin
 - **A restricted asset must never appear in a fee output.** The policy server refuses to co-sign
   such a transaction. That rule is what stops a restricted asset being swept into a block
   producer's coinbase; do not relax it for convenience.
-- **`PolicySigner` in `openampd/internal/server/signer.go` is a deliberate seam.** The committed
-  backend is a single local key per asset (testnet only); the threshold backend swaps in behind
-  that interface. Keep new signing code behind the interface.
+- **`PolicySigner` in `openampd/internal/server/signer.go` is a deliberate seam.** Two backends
+  are committed behind it: `local` (default; one software key per asset) and `frost` (2-of-3
+  threshold, DKG-generated, selected with `-signer frost`). Keep new signing code behind the
+  interface.
 - **Reorg awareness is not optional.** Sequentia reorganises whenever Bitcoin reorganises, so the
   chain follower re-marks transfer records above a fork point as unconfirmed. Velocity accounting
   and ownership reports depend on it.
