@@ -104,7 +104,7 @@ A new, optional openampd capability. Without it the swap still works via the deg
 - **At the deadline with no claim cosign issued**, the reservation expires and the seller may cosign a reclaim of `outpoint`. Because a reservation is not a signature, letting it expire is safe; openampd never issued a signature it must revoke.
 - Reservations are visible in the transparency log (reserve, claim/consume, expire) so both parties and auditors can follow the swap, consistent with the log-anchoring model.
 - No held funds, no swap secret, no custody: openampd only decides which of two mutually exclusive spends of an already-restricted UTXO it will cosign, by deadline and latch. This is strictly less power than it already has over every enclave spend.
-- **Precondition:** this rides `POST /v1/cosign`, so the OA-7 unclaimed-enclave-input containment fix (companion spec 2.5, confirmed unimplemented: the promise at `transfer.go:671-673` is only a comment, the code loops over claimed inputs at `transfer.go:676-686` with no rejection of unclaimed enclave inputs) is a precondition here too. Do not deploy swap settlement before OA-7.
+- **Precondition:** this rides `POST /v1/cosign`, so the OA-7 unclaimed-enclave-input containment check (companion spec 2.5) is a precondition here too. It is live: `/v1/cosign` refuses a transaction whose unclaimed inputs spend this asset's enclaves (`transfer.go`, refusal `unclaimed enclave input`).
 
 **Interaction with velocity (fixes Problem A precisely).** With claim-time cosign, the velocity-counted `TransferRecord` is written only on the real claim (`transfer.go:729`), so an abandoned or expired reservation never touches velocity. Do not write a velocity record at reservation time.
 

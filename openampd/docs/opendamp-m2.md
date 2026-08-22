@@ -1,5 +1,14 @@
 # OpenDAMP M2: policy-commitment library and snapshot service
 
+**Historical (M2, superseded by the M4 issuance path).** Network-enforced
+issuance now goes through `POST /v1/issuer/damp-assets` (README, "Network-
+enforced issuance"); with a registry configured, `enforcement: "damp"` on
+`POST /v1/issuer/assets` is a 400 pointing there, not the 501 described below.
+The `genesis_policy` and `genesis_snapshot_hash` contract fields were never
+adopted: `pi_0` commits to the asset id, which commits to the contract. The
+library, the `dmt-v1` format and the snapshot service described here are
+current.
+
 Companion to the protocol specification `doc/sequentia/opendamp-design.md` in
 the Sequentia node repository. That document is authoritative for the formats;
 this note records what the M2 milestone delivers in `openampd`, what it

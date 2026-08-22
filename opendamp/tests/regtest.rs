@@ -4,9 +4,10 @@
 //!
 //!     cargo test --test regtest -- --ignored --nocapture
 //!
-//! Binary discovery: $OPENDAMP_NODE_BIN (path to sequentiad/elementsd), else
-//! /home/aejkohl/Sequentia/src/sequentiad, else src/elementsd. The matching
-//! *-cli binary must sit next to it.
+//! Binary discovery: $OPENDAMP_NODE_BIN (path to sequentiad), else
+//! ../Sequentia/src/sequentiad relative to the openamp checkout (a node
+//! checkout beside this one), else its legacy src/elementsd name. The
+//! matching *-cli binary must sit next to it.
 //!
 //! Proves, printing every txid:
 //!   1. issue A and V, fund C_U(alice) and C_V(pi0 = whitelist {alice,bob})
@@ -53,10 +54,11 @@ impl Node {
     fn locate_binaries() -> Option<(PathBuf, PathBuf)> {
         let candidates: Vec<PathBuf> = match std::env::var("OPENDAMP_NODE_BIN") {
             Ok(p) => vec![PathBuf::from(p)],
-            Err(_) => vec![
-                PathBuf::from("/home/aejkohl/Sequentia/src/sequentiad"),
-                PathBuf::from("/home/aejkohl/Sequentia/src/elementsd"),
-            ],
+            Err(_) => {
+                // CARGO_MANIFEST_DIR is <checkout>/opendamp.
+                let node_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Sequentia/src");
+                vec![node_src.join("sequentiad"), node_src.join("elementsd")]
+            }
         };
         for daemon in candidates {
             if !daemon.is_file() {
@@ -386,7 +388,7 @@ fn regtest_end_to_end() {
     let Some(node) = Node::start() else {
         panic!(
             "no node binary found; set OPENDAMP_NODE_BIN or build \
-             /home/aejkohl/Sequentia/src/sequentiad"
+             ../Sequentia/src/sequentiad beside this checkout"
         );
     };
 
