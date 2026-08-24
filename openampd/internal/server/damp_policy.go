@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp/dmt"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp/dmt"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // Policy updates for a network-enforced (OpenDAMP) asset: the freeze path.

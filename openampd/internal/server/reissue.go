@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"net/http"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
 )
 
 // OA-6: reissue MORE of an existing restricted asset into a target enclave, for

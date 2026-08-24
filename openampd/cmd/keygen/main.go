@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
 )
 
 func main() {

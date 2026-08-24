@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // Blinding-key rotation (docs/blinding-key-rotation.md, implemented): versioned

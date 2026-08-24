@@ -13,10 +13,10 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // End-to-end proof that the frost backend sits behind the seam invisibly: a

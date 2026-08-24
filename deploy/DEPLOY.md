@@ -15,7 +15,7 @@ Prerequisites on the box:
 
 ```
 cd /root/sequentia
-git clone https://github.com/GracedEternalKingCabbageMan/openamp.git   # first time
+git clone https://github.com/ConcatenaLabs/openamp.git   # first time
 cd openamp && git pull
 export PATH=$PATH:~/dev-tools/go/bin
 go build -o openampd/openampd ./openampd/cmd/openampd
@@ -92,7 +92,7 @@ curl -s localhost:8722/v1/issuer/assets \
 
 The response returns the asset id, the contract JSON, and its hash. Publish
 the contract to the registry so wallets can verify the asset-to-policy binding
-(§4 of the [design doc](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/doc/sequentia/openamp-design.md)).
+(§4 of the [design doc](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/openamp-design.md)).
 Transfers then go through `POST /v1/transfers` (fee convert/sponsor) or
 `POST /v1/cosign` (self-paid), each requiring the holder's signature over the
 returned sighashes; the full API and an end-to-end walkthrough are in the

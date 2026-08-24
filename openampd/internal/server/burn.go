@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
 )
 
 // handleBurnBuild builds a redeem burn (OA-5): a holder's enclave units are sent

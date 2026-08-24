@@ -13,8 +13,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // OpenDAMP M2: the enforcement election is plumbed through issuance ("cosign"

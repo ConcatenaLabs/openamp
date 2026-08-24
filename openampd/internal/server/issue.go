@@ -12,9 +12,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/fastmerkle"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/fastmerkle"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // precisionUnset is the pre-decode sentinel for issueRequest.Precision. Because

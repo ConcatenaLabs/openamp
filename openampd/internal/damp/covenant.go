@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp/dmt"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp/dmt"
 )
 
 // Covenant-facing policy construction, mirroring opendamp/src/policy.rs so the

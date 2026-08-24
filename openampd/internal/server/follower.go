@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 const recentBlockWindow = 100

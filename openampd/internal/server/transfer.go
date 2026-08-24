@@ -11,9 +11,9 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // --- policy engine -----------------------------------------------------------

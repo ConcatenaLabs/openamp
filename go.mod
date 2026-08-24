@@ -1,4 +1,4 @@
-module github.com/GracedEternalKingCabbageMan/openamp
+module github.com/ConcatenaLabs/openamp
 
 go 1.26.4
 

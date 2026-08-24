@@ -39,8 +39,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // pledgeMessage is what a lender or holder signs to authorise a pledge action.

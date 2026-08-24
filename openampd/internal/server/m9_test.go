@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // M9: an external issuer key at issuance (the entity's own browser key becomes

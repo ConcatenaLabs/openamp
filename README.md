@@ -4,7 +4,7 @@ Open-source issuer-governed assets for the Sequentia network: a self-hostable eq
 
 This is testnet software. Everything here runs against the Sequentia public testnet (parent chain: Bitcoin testnet4); there is no mainnet.
 
-Design document: [`doc/sequentia/openamp-design.md`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/HEAD/doc/sequentia/openamp-design.md) in the node repository. Frozen format specifications live under [`spec/`](spec/).
+Design document: [`doc/sequentia/openamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/HEAD/doc/sequentia/openamp-design.md) in the node repository. Frozen format specifications live under [`spec/`](spec/).
 
 ## Status
 
@@ -147,7 +147,7 @@ Mints directly into the initial holder's enclave; `clawback` defaults to true an
 
 #### Network-enforced issuance (OpenDAMP)
 
-A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer. Since the 2026-08-19 review every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
+A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer. Since the 2026-08-19 review every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
 
 Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing at the CMR pinning file `opendamp registry` produces (`opendamp/vectors/addresses.json` is a valid input). Unset, every network-enforcement endpoint answers `501 {"error": "network enforcement is not configured on this policy server"}`. Unlike hosted issuance this needs **no** `-demoissuer`: no issuer private key is held server-side, because `issuer_update_key` is the issuer's own key and this server never signs a transfer of the asset.
 
@@ -293,7 +293,7 @@ curl -s localhost:8722/v1/transfers/<tid>/complete \
 curl -s localhost:8722/v1/log
 ```
 
-The same flow, driven programmatically against a regtest node, is the committed integration proof [`test/functional/feature_openamp_daemon.py`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) in the node repository.
+The same flow, driven programmatically against a regtest node, is the committed integration proof [`test/functional/feature_openamp_daemon.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) in the node repository.
 
 ## How openampd uses the Sequentia node
 
@@ -311,7 +311,7 @@ The node pays and accepts fees per Sequentia's open fee market: openampd attache
 Requires Go 1.26+ (dependencies are vendored, so builds work offline).
 
 ```sh
-git clone https://github.com/GracedEternalKingCabbageMan/openamp.git
+git clone https://github.com/ConcatenaLabs/openamp.git
 cd openamp
 go build ./...
 go test ./...
@@ -384,7 +384,7 @@ tools/gen_vectors.py        golden-vector generator (runs against the node
 vendor/                     vendored Go dependencies (offline builds)
 ```
 
-`openampd/cmd/seqpald/` and `deploy/seqpald.service` are the original M0 SeqPal gateway (four routes, port 8724) and are superseded: the `seqpald` that runs today lives in the [`SeqPal`](https://github.com/GracedEternalKingCabbageMan/SeqPal) repository (its own database, escrow and ~80 routes, port 8730; see `seqpald/DEPLOY.md` there). They are kept for the record and are not what the box runs.
+`openampd/cmd/seqpald/` and `deploy/seqpald.service` are the original M0 SeqPal gateway (four routes, port 8724) and are superseded: the `seqpald` that runs today lives in the [`SeqPal`](https://github.com/ConcatenaLabs/SeqPal) repository (its own database, escrow and ~80 routes, port 8730; see `seqpald/DEPLOY.md` there). They are kept for the record and are not what the box runs.
 
 Regenerating the golden vectors (needs a checkout of the node repository):
 
@@ -396,18 +396,18 @@ go test ./openampd/internal/elements
 
 ### Milestone artifacts
 
-- [`test/functional/feature_openamp_m0.py`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/test/functional/feature_openamp_m0.py) (node repo): the M0 proof; demonstrates on regtest that enclave issuance, policy-co-signed transfer, clawback, and the contract-to-asset-ID binding all work against unmodified consensus.
-- [`test/functional/feature_openamp_daemon.py`](https://github.com/GracedEternalKingCabbageMan/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) (node repo): end-to-end integration of a real `openampd` process with a regtest node, covering the hosted-transfer, rules, freeze, and clawback flows.
+- [`test/functional/feature_openamp_m0.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_m0.py) (node repo): the M0 proof; demonstrates on regtest that enclave issuance, policy-co-signed transfer, clawback, and the contract-to-asset-ID binding all work against unmodified consensus.
+- [`test/functional/feature_openamp_daemon.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) (node repo): end-to-end integration of a real `openampd` process with a regtest node, covering the hosted-transfer, rules, freeze, and clawback flows.
 - `openampd/internal/elements/testdata/vectors.json`: golden vectors proving the Go Elements primitives byte-exact against the node's test framework.
 
 ## Ecosystem
 
 | Repo | One-liner |
 |---|---|
-| [`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) | The Sequentia node (Sequentia Core, `sequentiad`; a fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
-| [`sequentia-registry`](https://github.com/GracedEternalKingCabbageMan/sequentia-registry) | Sequentia Asset Registry service (asset metadata). |
-| [`SWK`](https://github.com/GracedEternalKingCabbageMan/SWK) | Sequentia Wallet Kit: a fork of Blockstream LWK, providing a Rust wallet library, CLI, and WASM bindings for building Sequentia (and Bitcoin testnet4) wallets. |
-| [`ambra`](https://github.com/GracedEternalKingCabbageMan/ambra) | Ambra: non-custodial dual-chain (Bitcoin testnet4 + Sequentia) mobile wallet, a Flutter UI over a Rust core built on SWK. |
+| [`Sequentia`](https://github.com/ConcatenaLabs/Sequentia) | The Sequentia node (Sequentia Core, `sequentiad`; a fork of Elements 23.3.3): consensus, anchoring, proof of stake, open fee market, plus the canonical protocol documentation in `doc/sequentia/`. |
+| [`sequentia-registry`](https://github.com/ConcatenaLabs/sequentia-registry) | Sequentia Asset Registry service (asset metadata). |
+| [`SWK`](https://github.com/ConcatenaLabs/SWK) | Sequentia Wallet Kit: a fork of Blockstream LWK, providing a Rust wallet library, CLI, and WASM bindings for building Sequentia (and Bitcoin testnet4) wallets. |
+| [`ambra`](https://github.com/ConcatenaLabs/ambra) | Ambra: non-custodial dual-chain (Bitcoin testnet4 + Sequentia) mobile wallet, a Flutter UI over a Rust core built on SWK. |
 
 ## Contributing
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // W-8: the PolicySigner seam. SignPolicy carries a truthful PolicyContext (what

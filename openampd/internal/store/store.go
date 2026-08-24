@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp"
 )
 
 type User struct {
