@@ -11,8 +11,8 @@ import (
 
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // --- fault injection through the seam ----------------------------------------

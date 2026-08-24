@@ -16,8 +16,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // KeygenMode selects how a new policy key is generated.

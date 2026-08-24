@@ -11,10 +11,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	_ "github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server/frostsigner" // registers -signer=frost
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	_ "github.com/ConcatenaLabs/openamp/openampd/internal/server/frostsigner" // registers -signer=frost
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 func main() {

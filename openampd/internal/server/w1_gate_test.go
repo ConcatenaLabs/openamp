@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // W-1: a testmempoolaccept gate in front of EVERY broadcast of a server-built

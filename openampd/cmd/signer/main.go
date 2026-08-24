@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
 )
 
 func main() {

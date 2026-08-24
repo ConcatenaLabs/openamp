@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // OA-8 (opt-in confidential per call, no node flag) and OA-LM (transparency-log

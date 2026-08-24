@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"net/http"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/elements"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
 )
 
 // Blinded-change consolidation. Confidential builds pay the server's fee

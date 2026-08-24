@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/damp"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/damp"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // OpenDAMP snapshot service (M2, opendamp-design.md section 4). Pure data

@@ -14,8 +14,8 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // detRand is a deterministic byte stream (SHA256 counter mode over a seed) so

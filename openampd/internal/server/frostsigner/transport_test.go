@@ -14,8 +14,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
 
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/server"
-	"github.com/GracedEternalKingCabbageMan/openamp/openampd/internal/store"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/server"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
 // The transport seam's failure semantics: unreachable versus misbehaving,

@@ -9,7 +9,7 @@ taproot script plus the policy server's signature.
 before changing behaviour; this file covers only what the README does not.
 
 Node and consensus conventions live in the
-[`Sequentia`](https://github.com/GracedEternalKingCabbageMan/Sequentia) repo.
+[`Sequentia`](https://github.com/ConcatenaLabs/Sequentia) repo.
 
 ## Build, test, run
 
