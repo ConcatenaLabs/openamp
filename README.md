@@ -6,18 +6,18 @@ This is testnet software. Everything here runs against the Sequentia public test
 
 Design document: [`doc/sequentia/openamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/HEAD/doc/sequentia/openamp-design.md) in the node repository. Frozen format specifications live under [`spec/`](spec/).
 
-## Status
+## The live instance, and what it serves
 
-- `openampd` is live on the Sequentia public testnet behind `https://sequentiatestnet.com/openamp/` (REST API only, no web UI). The demo restricted asset **BONDX** was issued and transferred through it on 2026-07-08:
+- `openampd` runs on the Sequentia public testnet behind `https://sequentiatestnet.com/openamp/` (REST API only, no web UI). It governs the demo restricted asset **BONDX**:
 
   ```
   curl -s https://sequentiatestnet.com/openamp/v1/assets
   ```
 
-  Two network-enforced (OpenDAMP) assets, **NEPLT** and **NEPL2**, have since been issued on the public testnet through the same instance (`"enforcement": "damp"` in their contracts).
+  The same instance also governs two network-enforced (OpenDAMP) assets, **NEPLT** and **NEPL2** (`"enforcement": "damp"` in their contracts).
 
-- Working today (committed code): registration, enclave addresses and balances, hosted transfers with fee conversion or sponsorship, raw co-signing of self-built transactions, hosted issuance (demo mode) with optional blinded minting, per-transfer opt-in confidentiality end to end (blinded or explicit transfers of any asset, mixed explicit+blinded enclave sets, watch-wallet unblinding), freezes, categories, per-asset rules (velocity, holder cap, lock-in, vesting), clawback, ownership reports, transparency log with on-chain anchoring, and a reorg-aware chain follower.
-- Also committed and running on the live testnet: the FROST threshold backend for the policy key (`-signer frost`), with distributed key generation and a transport seam for running the quorum across hosts. Its members are separate roles in one process today, which is a deployment posture rather than a protocol limitation — see "Trust model" below.
+- The daemon implements: registration, enclave addresses and balances, hosted transfers with fee conversion or sponsorship, raw co-signing of self-built transactions, hosted issuance (demo mode) with optional blinded minting, per-transfer opt-in confidentiality end to end (blinded or explicit transfers of any asset, mixed explicit+blinded enclave sets, watch-wallet unblinding), freezes, categories, per-asset rules (velocity, holder cap, lock-in, vesting), clawback, ownership reports, transparency log with on-chain anchoring, and a reorg-aware chain follower.
+- Also running on the live testnet: the FROST threshold backend for the policy key (`-signer frost`), with distributed key generation and a transport seam for running the quorum across hosts. Its members are separate roles in one process today, which is a deployment posture rather than a protocol limitation — see "Trust model" below.
 
 ## Trust model
 
@@ -147,7 +147,7 @@ Mints directly into the initial holder's enclave; `clawback` defaults to true an
 
 #### Network-enforced issuance (OpenDAMP)
 
-A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer. Since the 2026-08-19 review every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
+A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`opendamp/STATUS.md`](opendamp/STATUS.md) — read it before describing a policy to an issuer. Every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
 
 Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing at the CMR pinning file `opendamp registry` produces (`opendamp/vectors/addresses.json` is a valid input). Unset, every network-enforcement endpoint answers `501 {"error": "network enforcement is not configured on this policy server"}`. Unlike hosted issuance this needs **no** `-demoissuer`: no issuer private key is held server-side, because `issuer_update_key` is the issuer's own key and this server never signs a transfer of the asset.
 
@@ -394,7 +394,7 @@ PYTHONPATH=$SEQ_REPO/test/functional python3 tools/gen_vectors.py \
 go test ./openampd/internal/elements
 ```
 
-### Milestone artifacts
+### Integration proofs
 
 - [`test/functional/feature_openamp_m0.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_m0.py) (node repo): the M0 proof; demonstrates on regtest that enclave issuance, policy-co-signed transfer, clawback, and the contract-to-asset-ID binding all work against unmodified consensus.
 - [`test/functional/feature_openamp_daemon.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) (node repo): end-to-end integration of a real `openampd` process with a regtest node, covering the hosted-transfer, rules, freeze, and clawback flows.
