@@ -375,7 +375,7 @@ opendamp/                   the Rust crate: SimplicityHL covenant programs
                             proof (tests/regtest.rs), the CMR pinning file
                             (vectors/addresses.json) and a Go mirror of the
                             dmt-v1 tree (gomirror/); start with
-                            opendamp/STATUS.md and opendamp/SPEC-dmt-v1.md
+                            opendamp/README.md
 spec/                       frozen formats (contract v1) and the venue/wallet
                             integration specification
 deploy/                     systemd units + deploy runbook
