@@ -916,8 +916,13 @@ pub fn regulated_flows(
         }
     }
     for (index, out) in tx.output.iter().enumerate().skip(1) {
-        if out.asset.explicit() != Some(a) || out.script_pubkey.is_empty() {
+        if out.asset.explicit() != Some(a) {
             continue;
+        }
+        if out.script_pubkey.is_empty() {
+            return Err(format!(
+                "fee output {index} carries the regulated asset; the covenant refuses to burn it"
+            ));
         }
         let value = out.value.explicit().unwrap_or(0);
         if out.script_pubkey == cu_sender_spk {
@@ -1063,7 +1068,15 @@ pub fn cosign_transfer(
     let mut paid_to_others: u64 = 0;
     for (idx, out) in tx.output.iter().enumerate().skip(1) {
         if out.script_pubkey.is_empty() {
-            explicit(out, &format!("fee output {idx}"))?;
+            // A fee output carrying the regulated asset burns it, which the
+            // covenant refuses; named here rather than by the BitMachine.
+            let (asset, _) = explicit(out, &format!("fee output {idx}"))?;
+            if asset == a {
+                return Err(format!(
+                    "fee output {idx} carries the regulated asset: a fee is paid in another \
+                     asset, and the covenant refuses to burn this one"
+                ));
+            }
             continue;
         }
         let (asset, value) = explicit(out, &format!("output {idx}"))?;
