@@ -876,6 +876,66 @@ pub fn complete_transfer(
     ))
 }
 
+/// One movement of the regulated asset in a transaction somebody else laid
+/// out, as a signer should read it before signing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Flow {
+    /// The sender's own coin, spent.
+    Input { index: usize, value: u64 },
+    /// Back to the sender's own C_U.
+    Change { index: usize, value: u64 },
+    /// To a recipient's C_U.
+    Payment { index: usize, to: XOnlyPublicKey, value: u64 },
+}
+
+/// Every input and output of the regulated asset in `tx`, from the sender's
+/// point of view, for a signer to read before `cosign_transfer` signs. Owners
+/// of outputs are resolved against `candidates` exactly as the cosigner does;
+/// an output of the asset that resolves to nobody is an error here too, so
+/// what is printed is what will be signed.
+pub fn regulated_flows(
+    ctx: &Ctx,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    sender: &XOnlyPublicKey,
+    candidates: &[XOnlyPublicKey],
+) -> Result<Vec<Flow>, String> {
+    let a = ctx.params.asset_a;
+    let cu_sender_spk = ctx.cu_info(sender).script_pubkey;
+    let by_spk: Vec<(Script, XOnlyPublicKey)> = candidates
+        .iter()
+        .map(|k| (ctx.cu_info(k).script_pubkey, *k))
+        .collect();
+    let mut flows = Vec::new();
+    for (index, prev) in prevouts.iter().enumerate().skip(1) {
+        if prev.asset.explicit() == Some(a) && prev.script_pubkey == cu_sender_spk {
+            flows.push(Flow::Input {
+                index,
+                value: prev.value.explicit().unwrap_or(0),
+            });
+        }
+    }
+    for (index, out) in tx.output.iter().enumerate().skip(1) {
+        if out.asset.explicit() != Some(a) || out.script_pubkey.is_empty() {
+            continue;
+        }
+        let value = out.value.explicit().unwrap_or(0);
+        if out.script_pubkey == cu_sender_spk {
+            flows.push(Flow::Change { index, value });
+            continue;
+        }
+        let to = by_spk
+            .iter()
+            .find(|(spk, _)| *spk == out.script_pubkey)
+            .map(|(_, k)| *k)
+            .ok_or_else(|| {
+                format!("output {index} pays the regulated asset to no candidate's C_U")
+            })?;
+        flows.push(Flow::Payment { index, to, value });
+    }
+    Ok(flows)
+}
+
 /// Sign the OpenDAMP inputs of a transaction somebody else composed.
 ///
 /// A transfer is not always this builder's to lay out. A settlement of a
