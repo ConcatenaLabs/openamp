@@ -15,7 +15,9 @@ use opendamp::elements::{
 };
 use opendamp::net::Net;
 use opendamp::programs::{AssetParams, Shape};
-use opendamp::txbuild::{build_transfer, complete_transfer, cosign_transfer, Ctx, TransferReq};
+use opendamp::txbuild::{
+    build_transfer, complete_transfer, cosign_transfer, regulated_flows, Ctx, Flow, TransferReq,
+};
 
 fn key(byte: u8) -> ([u8; 32], XOnlyPublicKey) {
     let mut sk = [byte; 32];
@@ -169,6 +171,16 @@ fn cosigns_a_settlement_shaped_transaction() {
         "a witness already on the transaction survives"
     );
     assert_eq!(report.user_witnesses.len(), 1);
+
+    // What the signer is told they are signing is exactly what moves.
+    let flows = regulated_flows(&ctx, &tx, &prevouts, &alice, &[bob]).expect("resolves");
+    assert_eq!(
+        flows,
+        vec![
+            Flow::Input { index: 2, value: 20_000 },
+            Flow::Payment { index: 2, to: bob, value: 20_000 },
+        ]
+    );
 }
 
 /// Every refusal names what is wrong, before anything is signed.

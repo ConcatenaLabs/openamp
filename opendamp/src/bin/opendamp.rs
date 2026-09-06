@@ -33,7 +33,7 @@ use opendamp::tapscript::{
 use opendamp::elements::{confidential, Transaction, TxOut};
 use opendamp::txbuild::{
     build_transfer, complete_issuer_op, complete_transfer, cosign_transfer, covenant_env,
-    sig_all_digest, Ctx, IssuerReq, TransferReq,
+    regulated_flows, sig_all_digest, Ctx, Flow, IssuerReq, TransferReq,
 };
 
 fn main() {
@@ -805,6 +805,36 @@ fn cmd_transfer_cosign(args: &Args) -> Result<(), String> {
     for r in args.many("recipient") {
         candidates.push(xonly(r)?);
     }
+    // What is being signed, said before it is: a signer reads this the way
+    // they would read a transaction their own wallet showed them.
+    let secp = opendamp::elements::secp256k1_zkp::Secp256k1::new();
+    let sender = opendamp::elements::secp256k1_zkp::Keypair::from_seckey_slice(&secp, &sk)
+        .map_err(|e| format!("bad sender key: {e}"))?
+        .x_only_public_key()
+        .0;
+    let mut spent = 0u64;
+    let mut paid = 0u64;
+    for flow in regulated_flows(&ctx, &tx, &prevouts, &sender, &candidates)? {
+        match flow {
+            Flow::Input { index, value } => {
+                spent += value;
+                eprintln!("input {index}: {value} atoms of the asset from C_U({sender})");
+            }
+            Flow::Change { index, value } => {
+                eprintln!("output {index}: {value} atoms back to C_U({sender}) (change)");
+            }
+            Flow::Payment { index, to, value } => {
+                paid += value;
+                eprintln!("output {index}: {value} atoms of the asset to C_U({to})");
+            }
+        }
+    }
+    eprintln!(
+        "signing as {sender}: {spent} atoms spent, {paid} paid to others, {} kept, \
+         nLockTime {}",
+        spent.saturating_sub(paid),
+        tx.lock_time.to_consensus_u32()
+    );
     let (signed, report) = cosign_transfer(&ctx, &tx, &prevouts, &sk, &candidates, true)?;
     eprintln!(
         "verifier input 0: leaf {}, witness {} B, cost {} milli-WU = {} WU, budget {} WU, \

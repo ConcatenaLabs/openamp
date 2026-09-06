@@ -73,7 +73,10 @@ nothing else, so a party who signed before the sender loses nothing.
 value, script_pubkey}`; whatever else the document carries comes back with it.
 `transfer-build` prints `prevouts` in this form. The candidates for an output
 of the asset are every whitelisted key plus any named with `--recipient`.
-Before signing, the tool names what a node would only reject: a verifier of
+Before signing, the tool says what it is about to sign -- each coin of the
+asset spent from the sender's `C_U`, each output of it and whose `C_U` it
+pays, the totals, the height claimed -- and names what a node would only
+reject: a verifier of
 another policy at input 0, a regulated input that is not the sender's, an
 output of the asset paying no candidate's `C_U`, a payment over the limit, a
 lockup or receive window the transaction's `nLockTime` does not claim. Every
