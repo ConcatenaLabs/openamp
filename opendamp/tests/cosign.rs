@@ -205,6 +205,19 @@ fn refuses_what_it_cannot_prove() {
         .expect_err("prevouts must match the inputs");
     assert!(err.contains("prevouts"), "{err}");
 
+    // A fee output that would burn the regulated asset is named, not left to
+    // the BitMachine.
+    let mut burn = built.tx.clone();
+    let last = burn.output.len() - 1;
+    assert!(burn.output[last].script_pubkey.is_empty(), "the builder's last output is the fee");
+    burn.output[last].asset = confidential::Asset::Explicit(asset(A));
+    let err = cosign_transfer(&ctx, &burn, &built.prevouts, &alice_sk, &[bob], true)
+        .expect_err("a fee in the regulated asset burns it");
+    assert!(err.contains("fee output") && err.contains("regulated asset"), "{err}");
+    let err = regulated_flows(&ctx, &burn, &built.prevouts, &alice, &[bob])
+        .expect_err("the summary refuses it the same way");
+    assert!(err.contains("fee output"), "{err}");
+
     // A verifier of some other policy: same asset, different whitelist.
     let other = test_ctx(&[alice]);
     let err = cosign_transfer(&other, &built.tx, &built.prevouts, &alice_sk, &[bob], true)
