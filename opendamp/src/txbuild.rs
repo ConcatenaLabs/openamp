@@ -20,6 +20,7 @@ use simplicityhl::simplicity::jet::elements::{ElementsEnv, ElementsUtxo};
 use simplicityhl::CompiledProgram;
 
 use crate::dmt;
+use crate::hexutil::hex;
 use crate::net::Net;
 use crate::programs::{
     self, compile_issuer, compile_user, compile_verifier, satisfy_program, AssetParams,
@@ -866,6 +867,246 @@ pub fn complete_transfer(
 
     Ok((
         tx,
+        WitnessReport {
+            shape,
+            verifier_witness,
+            verifier_cost,
+            user_witnesses,
+        },
+    ))
+}
+
+/// Sign the OpenDAMP inputs of a transaction somebody else composed.
+///
+/// A transfer is not always this builder's to lay out. A settlement of a
+/// Pignus repurchase, for one, spends the verifier at input 0 and the lender's
+/// C_U at input 2 alongside two coins that are not OpenDAMP's at all -- a
+/// covenant vault and the borrower's payment -- in an order the other
+/// covenant dictates. What the sender of the regulated asset owes such a
+/// transaction is exactly what they owe their own: a signature over each of
+/// their C_U inputs, and the verifier witness that proves them and every
+/// recipient. This produces both, and touches nothing else: every other
+/// input's witness comes back as it went in, so a party who signed before the
+/// sender loses nothing and one who signs after finds the transaction intact.
+///
+/// `candidates` are the keys an output of A might be paying: every key whose
+/// C_U script matches an A output is the owner that output's proof names.
+/// Pass the whitelist, or the recipients you know of; a key that is not
+/// whitelisted cannot be proven and is reported as such.
+///
+/// What is checked before anything is signed, so the reason is named here
+/// rather than by a node:
+///   * input 0 spends the verifier of THIS policy (asset V, amount q, the
+///     C_V(pi) script) and output 0 recreates it;
+///   * every input carrying A is C_U(sender), and there is at least one;
+///   * every output carries an explicit asset, and every output carrying A
+///     pays C_U(sender) (change) or a candidate's C_U (a payment);
+///   * the payments to others fit the transfer limit;
+///   * `nLockTime` satisfies the sender's lockup and each recipient's receive
+///     window, which the covenant checks against the height the transaction
+///     claims and nothing else.
+///
+/// `validate` runs every covenant on the BitMachine before returning.
+pub fn cosign_transfer(
+    ctx: &Ctx,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    sender_privkey: &[u8; 32],
+    candidates: &[XOnlyPublicKey],
+    validate: bool,
+) -> Result<(Transaction, WitnessReport), String> {
+    if tx.input.len() != prevouts.len() {
+        return Err(format!(
+            "{} inputs but {} prevouts: every input's spent output is needed to sign",
+            tx.input.len(),
+            prevouts.len()
+        ));
+    }
+    if tx.input.is_empty() || tx.output.is_empty() {
+        return Err("a transfer has at least one input and one output".into());
+    }
+    let secp = Secp256k1::new();
+    let sk = SecretKey::from_slice(sender_privkey).map_err(|e| format!("bad sender key: {e}"))?;
+    let sender = Keypair::from_secret_key(&secp, &sk).x_only_public_key().0;
+    let shape = programs::shape_for(tx.input.len(), tx.output.len())?;
+    let a = ctx.params.asset_a;
+    let v = ctx.params.asset_v;
+    let explicit = |o: &TxOut, what: &str| -> Result<(AssetId, u64), String> {
+        match (o.asset, o.value) {
+            (confidential::Asset::Explicit(asset), confidential::Value::Explicit(value)) => {
+                Ok((asset, value))
+            }
+            _ => Err(format!(
+                "{what} is confidential; the verifier reads explicit assets and values only"
+            )),
+        }
+    };
+
+    // Input 0 and output 0: the verifier, spent and recreated.
+    let cv_spk = &ctx.cv_info().script_pubkey;
+    let (in0_asset, in0_value) = explicit(&prevouts[0], "input 0")?;
+    if in0_asset != v || in0_value != ctx.params.q || prevouts[0].script_pubkey != *cv_spk {
+        return Err(format!(
+            "input 0 is not this policy's verifier: it must spend {} atoms of the \
+             verifier asset from C_V(pi) {}",
+            ctx.params.q,
+            hex(cv_spk.as_bytes())
+        ));
+    }
+    let (out0_asset, out0_value) = explicit(&tx.output[0], "output 0")?;
+    if out0_asset != v || out0_value != ctx.params.q || tx.output[0].script_pubkey != *cv_spk {
+        return Err(
+            "output 0 does not recreate the verifier: the same asset, amount and script as \
+             input 0 spends"
+                .into(),
+        );
+    }
+
+    // The sender's inputs: every input carrying A, and they must all be theirs.
+    let cu_sender_spk = ctx.cu_info(&sender).script_pubkey;
+    let mut a_inputs = Vec::new();
+    for (idx, prev) in prevouts.iter().enumerate().skip(1) {
+        let (asset, _) = explicit(prev, &format!("input {idx}"))?;
+        if asset != a {
+            continue;
+        }
+        if prev.script_pubkey != cu_sender_spk {
+            return Err(format!(
+                "input {idx} carries the regulated asset but is not C_U of the key given \
+                 ({sender}); every regulated input of one transfer has one owner, and \
+                 that owner signs"
+            ));
+        }
+        a_inputs.push((idx, sender, tx.input[idx].previous_output));
+    }
+    if a_inputs.is_empty() {
+        return Err(format!(
+            "no input carries the regulated asset from C_U({sender}): nothing here is \
+             this key's to sign"
+        ));
+    }
+    if a_inputs.len() > shape.max_regulated_inputs() {
+        return Err(format!(
+            "{} regulated inputs; shape {} takes at most {}",
+            a_inputs.len(),
+            shape,
+            shape.max_regulated_inputs()
+        ));
+    }
+
+    // The outputs of A: change to the sender, or a payment to a candidate.
+    let mut by_spk: Vec<(Script, XOnlyPublicKey)> = Vec::with_capacity(candidates.len());
+    for k in candidates {
+        by_spk.push((ctx.cu_info(k).script_pubkey, *k));
+    }
+    let mut a_outputs = Vec::new();
+    let mut paid_to_others: u64 = 0;
+    for (idx, out) in tx.output.iter().enumerate().skip(1) {
+        if out.script_pubkey.is_empty() {
+            explicit(out, &format!("fee output {idx}"))?;
+            continue;
+        }
+        let (asset, value) = explicit(out, &format!("output {idx}"))?;
+        if asset != a {
+            continue;
+        }
+        if out.script_pubkey == cu_sender_spk {
+            a_outputs.push((idx, sender));
+            continue;
+        }
+        let owner = by_spk
+            .iter()
+            .find(|(spk, _)| *spk == out.script_pubkey)
+            .map(|(_, k)| *k)
+            .ok_or_else(|| {
+                format!(
+                    "output {idx} pays the regulated asset to {}, which is no candidate's \
+                     C_U: name the recipient's key, and it must be whitelisted",
+                    hex(out.script_pubkey.as_bytes())
+                )
+            })?;
+        paid_to_others = paid_to_others
+            .checked_add(value)
+            .ok_or("payments overflow")?;
+        a_outputs.push((idx, owner));
+    }
+    if ctx.limit != programs::NO_LIMIT && paid_to_others > ctx.limit {
+        return Err(format!(
+            "this transaction pays {paid_to_others} atoms of the regulated asset to others; \
+             the policy's transfer limit is {}",
+            ctx.limit
+        ));
+    }
+
+    // Witnesses are laid over a copy that has none: the sighash covers no
+    // witness, so any party's signature already on the transaction is neither
+    // consumed nor disturbed by what is added here.
+    let mut bare = tx.clone();
+    for input in &mut bare.input {
+        input.witness = TxInWitness::default();
+    }
+    let built = BuiltTransfer {
+        tx: bare.clone(),
+        prevouts: prevouts.to_vec(),
+        a_outputs,
+        user_inputs: a_inputs.iter().map(|(i, _, _)| *i).collect(),
+        a_inputs,
+        fee_input: usize::MAX,
+        shape,
+    };
+    let sender_w = sender_witness(ctx, &sender)?;
+    let slots = verifier_slots(ctx, &built)?;
+    // The windows the covenant will hold this transaction to, named here.
+    let claimed = tx.lock_time.to_consensus_u32();
+    if sender_w.proof.entry.send_after > claimed {
+        return Err(format!(
+            "the sender's lockup runs until height {}; this transaction claims {claimed} \
+             through nLockTime",
+            sender_w.proof.entry.send_after
+        ));
+    }
+    for slot in slots.outputs.iter().flatten() {
+        if slot.1.entry.recv_after > claimed {
+            return Err(format!(
+                "recipient {} cannot receive before height {}; this transaction claims \
+                 {claimed} through nLockTime",
+                slot.0, slot.1.entry.recv_after
+            ));
+        }
+    }
+
+    let mut signed = tx.clone();
+    let (_, u_cb) = cu_spend_info(ctx.u_cmr(), &sender);
+    let mut user_witnesses = Vec::new();
+    for idx in &built.user_inputs {
+        let env = covenant_env(&ctx.net, &bare, prevouts, *idx, ctx.u_cmr(), u_cb.clone());
+        let digest = sig_all_digest(&env);
+        let (sig, _) = sign_bip340(sender_privkey, &digest)?;
+        let witness = programs::user_witness(&sender, &sig)?;
+        let size = attach_simplicity(
+            &mut signed,
+            *idx,
+            &ctx.user,
+            witness,
+            validate.then_some(&env),
+            &u_cb,
+        )?;
+        user_witnesses.push(size);
+    }
+    let p_cmr = ctx.p_cmr(shape)?;
+    let p_cb = ctx.verifier_spend().control_for(shape)?.clone();
+    let p_env = covenant_env(&ctx.net, &bare, prevouts, 0, p_cmr, p_cb.clone());
+    let (verifier_witness, verifier_cost) = attach_verifier(
+        &mut signed,
+        ctx.verifier_for(shape)?,
+        shape,
+        &sender_w,
+        &slots,
+        validate.then_some(&p_env),
+        &p_cb,
+    )?;
+    Ok((
+        signed,
         WitnessReport {
             shape,
             verifier_witness,

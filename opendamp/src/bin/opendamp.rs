@@ -9,6 +9,8 @@
 //!   opendamp vectors  --snapshot S [--out FILE]
 //!   opendamp transfer-build    --snapshot S --request R
 //!   opendamp transfer-finalize --snapshot S --request R
+//!   opendamp transfer-cosign   --snapshot S --transaction T --sender-privkey HEX \
+//!                              [--recipient X]... [--out FILE]
 //!   opendamp issuer-update --snapshot S --next-snapshot S' --request R \
 //!                          --issuer-privkey HEX
 //!   opendamp halt          --snapshot S --to-spk HEX --request R \
@@ -28,9 +30,10 @@ use opendamp::programs::{self, AssetParams};
 use opendamp::tapscript::{
     cu_spend_info, simplicity_leaf_hash, tap_branch, tap_data_hash,
 };
+use opendamp::elements::{confidential, Transaction, TxOut};
 use opendamp::txbuild::{
-    build_transfer, complete_issuer_op, complete_transfer, covenant_env, sig_all_digest, Ctx,
-    IssuerReq, TransferReq,
+    build_transfer, complete_issuer_op, complete_transfer, cosign_transfer, covenant_env,
+    sig_all_digest, Ctx, IssuerReq, TransferReq,
 };
 
 fn main() {
@@ -49,7 +52,7 @@ struct Args {
 
 fn usage() -> String {
     "usage: opendamp <derive|registry|vectors|transfer-build|transfer-finalize|\
-     issuer-update|halt> --snapshot FILE [...]"
+     transfer-cosign|issuer-update|halt> --snapshot FILE [...]"
         .to_string()
 }
 
@@ -391,6 +394,7 @@ fn run() -> Result<(), String> {
         "vectors" => cmd_vectors(&args),
         "transfer-build" => cmd_transfer_build(&args),
         "transfer-finalize" => cmd_transfer_finalize(&args),
+        "transfer-cosign" => cmd_transfer_cosign(&args),
         "issuer-update" => cmd_issuer(&args, false),
         "halt" => cmd_issuer(&args, true),
         other => Err(format!("unknown command {other}\n{}", usage())),
@@ -686,6 +690,9 @@ fn cmd_transfer_build(args: &Args) -> Result<(), String> {
 
     let doc = serde_json::json!({
         "unsigned_tx": hex(&built.tx.serialize()),
+        // The outputs the inputs spend, in input order: what any signer that
+        // did not build this transaction needs alongside it.
+        "prevouts": built.prevouts.iter().map(prevout_doc).collect::<Vec<_>>(),
         "a_outputs": built.a_outputs.iter()
             .map(|(i, k)| serde_json::json!({"output": i, "owner": hex(&k.serialize())}))
             .collect::<Vec<_>>(),
@@ -734,6 +741,91 @@ fn cmd_transfer_finalize(args: &Args) -> Result<(), String> {
     );
     eprintln!("user inputs: {:?} B", report.user_witnesses);
     println!("{}", hex(&tx.serialize()));
+    Ok(())
+}
+
+/// A transaction somebody else laid out, with the outputs its inputs spend.
+/// Whatever else the composer put in the document comes back with it, so a
+/// tool that wrote its own bookkeeping beside `tx` finds it there afterwards.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ForeignTx {
+    tx: String,
+    prevouts: Vec<PrevoutRef>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct PrevoutRef {
+    asset: String,
+    value: u64,
+    script_pubkey: String,
+}
+
+fn prevout_doc(o: &TxOut) -> serde_json::Value {
+    serde_json::json!({
+        "asset": o.asset.explicit().map(|a| a.to_string()).unwrap_or_default(),
+        "value": o.value.explicit().unwrap_or(0),
+        "script_pubkey": hex(o.script_pubkey.as_bytes()),
+    })
+}
+
+fn cmd_transfer_cosign(args: &Args) -> Result<(), String> {
+    let (snap, ctx) = load_snapshot(args.one("snapshot")?)?;
+    let path = args.one("transaction")?;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
+    let mut doc: ForeignTx = serde_json::from_str(&text).map_err(|e| {
+        format!("{path}: {e}; expected {{\"tx\": <hex>, \"prevouts\": [{{asset, value, script_pubkey}}...]}}")
+    })?;
+    let tx: Transaction = opendamp::elements::encode::deserialize(&unhex(&doc.tx)?)
+        .map_err(|e| format!("{path}: tx is not a transaction: {e}"))?;
+    let mut prevouts = Vec::with_capacity(doc.prevouts.len());
+    for (i, p) in doc.prevouts.iter().enumerate() {
+        prevouts.push(TxOut {
+            asset: confidential::Asset::Explicit(
+                asset(&p.asset).map_err(|e| format!("prevout {i}: {e}"))?,
+            ),
+            value: confidential::Value::Explicit(p.value),
+            nonce: confidential::Nonce::Null,
+            script_pubkey: Script::from(unhex(&p.script_pubkey)?),
+            witness: Default::default(),
+        });
+    }
+    let sk = unhex32(args.one("sender-privkey")?)?;
+    // Every whitelisted key is a candidate owner of an output of A, plus any
+    // the caller names; a recipient the snapshot does not list cannot be
+    // proven whichever way they are named.
+    let mut candidates: Vec<XOnlyPublicKey> = snap
+        .predicates
+        .whitelist
+        .entries
+        .iter()
+        .map(|e| xonly(e.key_str()))
+        .collect::<Result<_, _>>()?;
+    for r in args.many("recipient") {
+        candidates.push(xonly(r)?);
+    }
+    let (signed, report) = cosign_transfer(&ctx, &tx, &prevouts, &sk, &candidates, true)?;
+    eprintln!(
+        "verifier input 0: leaf {}, witness {} B, cost {} milli-WU = {} WU, budget {} WU, \
+         headroom {} WU",
+        report.shape.name(),
+        report.verifier_witness,
+        report.verifier_cost,
+        report.verifier_weight(),
+        report.verifier_budget(),
+        report.verifier_budget() as i64 - report.verifier_weight() as i64,
+    );
+    eprintln!("sender inputs signed: {:?} B", report.user_witnesses);
+    doc.tx = hex(&signed.serialize());
+    let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    match args.opt("out") {
+        Some(dest) => {
+            std::fs::write(dest, format!("{out}\n")).map_err(|e| format!("writing {dest}: {e}"))?;
+            eprintln!("wrote {dest}");
+        }
+        None => println!("{out}"),
+    }
     Ok(())
 }
 
