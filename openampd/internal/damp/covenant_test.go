@@ -14,10 +14,10 @@ import (
 // would publish a pi no deployed covenant is instantiated with, and every
 // transfer would fail at consensus.
 func TestCovenantPolicyMatchesVectors(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "opendamp", "vectors", "addresses.json")
+	path := filepath.Join("..", "..", "testdata", "opendamp-addresses.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("opendamp vectors unavailable (%v)", err)
+		t.Fatalf("opendamp vectors: %v", err)
 	}
 	var v struct {
 		Asset              string `json:"asset"`
@@ -112,9 +112,9 @@ func TestCovenantPolicyMatchesVectors(t *testing.T) {
 }
 
 func TestLoadProgramRegistryAcceptsVectors(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "opendamp", "vectors", "addresses.json")
+	path := filepath.Join("..", "..", "testdata", "opendamp-addresses.json")
 	if _, err := os.Stat(path); err != nil {
-		t.Skipf("opendamp vectors unavailable (%v)", err)
+		t.Fatalf("opendamp vectors: %v", err)
 	}
 	reg, err := LoadProgramRegistry(path)
 	if err != nil {

@@ -11,11 +11,11 @@ import (
 	"github.com/ConcatenaLabs/openamp/openampd/internal/damp/dmt"
 )
 
-// Covenant-facing policy construction, mirroring opendamp/src/policy.rs so the
+// Covenant-facing policy construction, mirroring opendamp's src/policy.rs so the
 // commitment this server publishes is the one the on-chain covenant verifies.
 // The M2 half of this package speaks the snapshot document format; this half
 // speaks the covenant's own dmt-v1 whitelist tree and the pi it is instantiated
-// with. Both must stay pinned to opendamp/vectors/addresses.json.
+// with. Both must stay pinned to opendamp's vectors/addresses.json.
 
 // PolicyVersion is the version byte inside pi.
 const PolicyVersion = 0x01
@@ -158,7 +158,7 @@ func BlacklistRoot(outpointKeys [][32]byte) ([32]byte, error) {
 
 // RulesRootCovenant is the fixed-order two-level Merkle root over the four
 // predicate commitments [blacklist, whitelist, limit, windows]; an absent
-// predicate commits to 32 zero bytes. This is opendamp/src/policy.rs
+// predicate commits to 32 zero bytes. This is opendamp's src/policy.rs
 // rules_root, NOT the M2 snapshot RulesRoot (which serves the document format);
 // they are separate constructions on purpose and both are vector-pinned.
 func RulesRootCovenant(blacklist, whitelist *[32]byte, limit uint64, windows *[32]byte) [32]byte {

@@ -54,10 +54,10 @@ type dampVectors struct {
 
 func loadDampVectors(t *testing.T) *dampVectors {
 	t.Helper()
-	path := filepath.Join("..", "..", "..", "opendamp", "vectors", "addresses.json")
+	path := filepath.Join("..", "..", "testdata", "opendamp-addresses.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("opendamp vectors unavailable (%v)", err)
+		t.Fatalf("opendamp vectors: %v", err)
 	}
 	var v dampVectors
 	if err := json.Unmarshal(raw, &v); err != nil {

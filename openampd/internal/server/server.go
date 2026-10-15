@@ -65,7 +65,7 @@ type Config struct {
 	ElectrsURL  string // explorer (electrs) base; prevout fallback when the node lacks -txindex
 	Signer      string // policy-key backend: "local" (default) or "frost"
 	// DampRegistry is the path to the OpenDAMP CMR pinning file (`opendamp
-	// registry`, or opendamp/vectors/addresses.json, which carries the same
+	// registry`, or opendamp's vectors/addresses.json, which carries the same
 	// fields). Empty = network enforcement is not configured, and every damp
 	// endpoint answers 501. A CMR is a program identity, so this is deliberately
 	// a file the operator controls rather than a compiled-in constant.

@@ -43,7 +43,7 @@ const (
 )
 
 // TreeDMTv1 is the only snapshot "tree" value this library implements, and the
-// only one any covenant can verify against (opendamp/SPEC-dmt-v1.md): a sorted
+// only one any covenant can verify against (opendamp's SPEC-dmt-v1.md): a sorted
 // dense tree of depth 16. A dmt-v1 snapshot is therefore a CONSENSUS-BEARING
 // document, and its pi is the covenant's pi -- PiCovenant over INTERNAL-order
 // asset bytes and RulesRootCovenant, both in covenant.go.

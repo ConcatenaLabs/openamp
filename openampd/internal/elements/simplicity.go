@@ -86,7 +86,7 @@ func UserCovenant(cmr, owner [32]byte) (*CovenantOutput, error) {
 // the same policy, and each asserts its own bounds, so they all live in one
 // address and a narrow leaf cannot be used for a wide transaction.
 //
-// The tree mirrors opendamp/src/tapscript.rs exactly, and has to: a different
+// The tree mirrors opendamp's src/tapscript.rs exactly, and has to: a different
 // arrangement of the same leaves is a different address.
 //
 //	root = TapBranch( L(shapes[0]),  perfect_tree(L(shapes[1..]), L(issuer)) )

@@ -39,7 +39,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/internal/elements/` | minimal Elements tx codec, taproot, sighash — golden-vectored |
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
-| `opendamp/` | Rust crate: the Simplicity covenants, `opendamp` CLI, regtest proof, CMR pinning file; read `STATUS.md` and `SPEC-dmt-v1.md` first |
+| `openampd/testdata/opendamp-addresses.json` | a pinned copy of `vectors/addresses.json` from the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenants; the Go mirror tests check against it, so copy it again whenever opendamp's programs change |
 | `spec/` | frozen formats (contract v1), venue/wallet integration spec |
 | `tools/gen_vectors.py` | golden-vector generator |
 
