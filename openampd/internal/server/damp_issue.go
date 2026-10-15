@@ -31,7 +31,7 @@ import (
 // Both covenant programs are parameterized at COMPILE time:
 //
 //   - U takes (asset A, verifier asset V, amount q), so its CMR is per-asset
-//     (opendamp/STATUS.md section 5);
+//     (opendamp's STATUS.md section 5);
 //   - P takes pi, so its CMR — and therefore the C_V address — is per-policy.
 //
 // openampd derives covenant ADDRESSES byte-exactly (internal/elements/
@@ -134,7 +134,7 @@ type dampIssueRequest struct {
 	// dead asset, because the covenant checks recipients and the very first
 	// transfer back to the holder would fail at consensus. Note the honest scope:
 	// the shipped covenant checks recipients only, so removing a key stops it
-	// receiving, not spending (opendamp/STATUS.md).
+	// receiving, not spending (opendamp's STATUS.md).
 	Whitelist []string `json:"whitelist"`
 	// VerifierAmount is q, the fixed amount of V a valid verifier output carries.
 	// Defaults to 1: q's only job is to be a recognisable constant, and a smaller

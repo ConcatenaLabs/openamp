@@ -30,7 +30,7 @@ import (
 //     under the old policy, because the old C_V is what their transfers spend.
 //
 // Both are reversible by a further update: restoring the key, or dropping the
-// listing, is one more seq (opendamp/STATUS.md proofs 7g/7h and 8e/8f).
+// listing, is one more seq (opendamp's STATUS.md, proofs 7g/7h and 8e/8f).
 //
 // # THE SEAM, AGAIN
 //

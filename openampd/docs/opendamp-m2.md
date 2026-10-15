@@ -108,7 +108,7 @@ Policy keys: blacklist entries are `SHA256(txid || BE32(vout))` with the txid in
 yields; whitelist entries are the raw 32-byte x-only owner key.
 
 Byte-for-byte specification, golden vectors and the witness encoding the
-covenant consumes: `opendamp/SPEC-dmt-v1.md`.
+covenant consumes: [`SPEC-dmt-v1.md`](https://github.com/ConcatenaLabs/opendamp/blob/main/SPEC-dmt-v1.md) in the opendamp repository.
 
 ### Commitments
 

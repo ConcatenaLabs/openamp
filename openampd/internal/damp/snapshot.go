@@ -325,7 +325,7 @@ func dmtBlacklistRoot(name string, p PredicateList) (*[32]byte, error) {
 
 // computePiDMT is the pi a dmt-v1 snapshot commits to: the one the deployed
 // verifier covenant is instantiated with. It mirrors `pi_of` in
-// opendamp/src/bin/opendamp.rs exactly — a dmt-v1 whitelist root, a dmt-v1
+// opendamp's src/bin/opendamp.rs exactly — a dmt-v1 whitelist root, a dmt-v1
 // interval blacklist root, the covenant rules_root, and the asset id in
 // INTERNAL byte order.
 //

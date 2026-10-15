@@ -16,6 +16,9 @@ Prerequisites on the box:
 ```
 cd /root/sequentia
 git clone https://github.com/ConcatenaLabs/openamp.git   # first time
+git clone https://github.com/ConcatenaLabs/opendamp.git  # first time; carries
+                                                         # the OpenDAMP CMR pinning file
+git -C opendamp pull
 cd openamp && git pull
 export PATH=$PATH:~/dev-tools/go/bin
 go build -o openampd/openampd ./openampd/cmd/openampd
@@ -32,7 +35,7 @@ OPENAMPD_WALLET=treasury-clean
 OPENAMPD_ISSUER_TOKEN=<long-random-token>       # gates the issuer API
 OPENAMPD_FEE_ASSET=<display-hex of tSEQ or USDX>   # the asset openampd pays fees in
 OPENAMPD_SIGNER=frost                           # policy-key backend; omit for `local`
-OPENAMPD_DAMP_REGISTRY=/root/sequentia/openamp/opendamp/vectors/addresses.json
+OPENAMPD_DAMP_REGISTRY=/root/sequentia/opendamp/vectors/addresses.json
                                                 # OpenDAMP CMR pinning file; omit to
                                                 # answer 501 on every damp endpoint
 OPENAMPD_ELECTRS_URL=http://127.0.0.1:3003      # explorer base URL (default shown);

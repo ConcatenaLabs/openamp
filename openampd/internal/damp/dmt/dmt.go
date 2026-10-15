@@ -1,9 +1,9 @@
 // Package dmt implements dmt-v1, the sorted dense Merkle tree that OpenDAMP
 // Simplicity covenants verify membership proofs against.
 //
-// This is a mirror of the Rust implementation in opendamp/src/dmt.rs (kept in
-// step with opendamp/gomirror/dmt, its standalone twin) and is
-// byte-for-byte compatible with it; opendamp/SPEC-dmt-v1.md is authoritative.
+// This is a mirror of the Rust implementation in src/dmt.rs of the opendamp
+// repository (kept in step with gomirror/dmt there, its standalone twin) and is
+// byte-for-byte compatible with it; opendamp's SPEC-dmt-v1.md is authoritative.
 // Standard library only, no dependencies.
 //
 // Two details are easy to get wrong when porting:

@@ -262,15 +262,15 @@ func TestSnapshotMinimal(t *testing.T) {
 
 // TestSnapshotDMTv1MatchesVectors is the important one: a dmt-v1 snapshot's pi
 // must be the pi the DEPLOYED covenant is instantiated with, so this builds one
-// from opendamp/vectors/addresses.json (asset, verifier asset, q, whitelist) and
+// from opendamp's vectors/addresses.json (asset, verifier asset, q, whitelist) and
 // requires Validate to accept the vectors' own pi. If the two constructions ever
 // diverge, this server would publish a policy no covenant answers to and every
 // transfer would fail at consensus.
 func TestSnapshotDMTv1MatchesVectors(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "opendamp", "vectors", "addresses.json")
+	path := filepath.Join("..", "..", "testdata", "opendamp-addresses.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Skipf("opendamp vectors unavailable (%v)", err)
+		t.Fatalf("opendamp vectors: %v", err)
 	}
 	var v struct {
 		Asset          string `json:"asset"`

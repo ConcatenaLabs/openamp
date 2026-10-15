@@ -20,7 +20,7 @@ import (
 
 // Network-enforced (OpenDAMP) issuance, end to end against a mock node.
 //
-// The strongest assertions here are pinned to opendamp/vectors/addresses.json,
+// The strongest assertions here are pinned to opendamp's vectors/addresses.json,
 // the file the Rust implementation generates and spends against on regtest: with
 // the vectors' CMRs and the vectors' owner key, the outputs this server builds
 // must pay the EXACT scriptPubKeys the vectors record. A drift in the taproot
@@ -71,10 +71,10 @@ func (v dampVec) whitelistKeys() []string {
 
 func loadDampVectors(t *testing.T) dampVec {
 	t.Helper()
-	p := filepath.Join("..", "..", "..", "opendamp", "vectors", "addresses.json")
+	p := filepath.Join("..", "..", "testdata", "opendamp-addresses.json")
 	raw, err := os.ReadFile(p)
 	if err != nil {
-		t.Skipf("opendamp vectors unavailable (%v)", err)
+		t.Fatalf("opendamp vectors: %v", err)
 	}
 	var v dampVec
 	if err := json.Unmarshal(raw, &v); err != nil {
