@@ -32,7 +32,6 @@ from GitHub and builds there — never edit source on the server, never copy bin
 |---|---|
 | `openampd/cmd/openampd/` | the daemon |
 | `openampd/cmd/keygen`, `cmd/signer` | demo client helpers |
-| `openampd/cmd/seqpald/`, `deploy/seqpald.service` | the superseded M0 SeqPal gateway; the live `seqpald` is in the `SeqPal` repo |
 | `openampd/internal/server/` | HTTP API, policy engine, issuance, transfers, clawback, pledges, snapshots, chain follower |
 | `openampd/internal/server/frostsigner/` | the FROST 2-of-3 policy-key backend (DKG, `Member`/`Transport` seam) |
 | `openampd/internal/damp/` | OpenDAMP policy commitment, dmt-v1 tree, snapshot documents |

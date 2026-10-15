@@ -355,7 +355,6 @@ Production deployment (systemd unit, Caddy reverse proxy, secrets handling): [`d
 openampd/cmd/openampd/      the daemon (flags, wiring, chain follower start)
 openampd/cmd/keygen/        demo BIP340 keypair generator
 openampd/cmd/signer/        demo client-side sighash signer
-openampd/cmd/seqpald/       the superseded M0 SeqPal gateway (see below)
 openampd/internal/server/   HTTP API, policy engine, issuance, transfers,
                             clawback, pledges, snapshots, PolicySigner seam,
                             chain follower
@@ -380,7 +379,7 @@ tools/gen_vectors.py        golden-vector generator (runs against the node
 vendor/                     vendored Go dependencies (offline builds)
 ```
 
-`openampd/cmd/seqpald/` and `deploy/seqpald.service` are the original M0 SeqPal gateway (four routes, port 8724) and are superseded: the `seqpald` that runs today lives in the [`SeqPal`](https://github.com/ConcatenaLabs/SeqPal) repository (its own database, escrow and ~80 routes, port 8730; see `seqpald/DEPLOY.md` there). They are kept for the record and are not what the box runs.
+The SeqPal gateway, `seqpald`, lives in the [`SeqPal`](https://github.com/ConcatenaLabs/SeqPal) repository.
 
 Regenerating the golden vectors (needs a checkout of the node repository):
 
