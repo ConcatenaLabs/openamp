@@ -40,12 +40,14 @@
 package server
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -306,6 +308,11 @@ func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
 			cp := *a
 			assets = append(assets, &cp)
 		}
+	})
+	// The store is a map, so without this every call lists the assets in a
+	// different order.
+	slices.SortFunc(assets, func(a, b *store.Asset) int {
+		return cmp.Or(cmp.Compare(a.Ticker, b.Ticker), cmp.Compare(a.ID, b.ID))
 	})
 	httpJSON(w, map[string]any{"assets": assets})
 }
