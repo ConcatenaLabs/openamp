@@ -124,7 +124,7 @@ type Asset struct {
 // addresses themselves.
 //
 // The first four are committed into the asset id through the contract's openamp
-// block (opendamp-design.md section 5), so they are chain-provable. The CMRs are
+// block (opendamp's DESIGN.md section 5), so they are chain-provable. The CMRs are
 // NOT in the contract: they are the compiled-program identities the operator
 // supplied from `opendamp derive`, recorded here so the addresses this server
 // reports are reproducible. A holder verifies them the same way anyone does — by

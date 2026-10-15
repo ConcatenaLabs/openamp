@@ -395,7 +395,7 @@ type issueRequest struct {
 	// covenant milestones (M1/M3) ship. Any other value is a 400.
 	Enforcement string `json:"enforcement,omitempty"`
 	// VerifierAmount is the fixed amount q of the verifier asset a valid
-	// verifier output carries (opendamp-design.md section 5, "verifier_amount").
+	// verifier output carries (opendamp's DESIGN.md section 5, "verifier_amount").
 	// Only meaningful with enforcement "damp"; accepted now so the request
 	// shape is pinned ahead of the capability.
 	VerifierAmount uint64 `json:"verifier_amount,omitempty"`
@@ -416,8 +416,9 @@ type issueRequest struct {
 // carry the key in their frozen bytes and verify as-is).
 // The enforcement election deliberately adds nothing here: cosign IS the absent
 // state, so an enforcement:"cosign" issuance stays byte-identical to an
-// enforcement-absent one (BONDX invariant). A damp issuance (refused until
-// M1/M3) will add the opendamp-design.md section 5 fields to the openamp block.
+// enforcement-absent one (BONDX invariant). A damp issuance is built in
+// damp_issue.go, which adds the section 5 fields of opendamp's DESIGN.md
+// (enforcement, verifier_asset, verifier_amount) to the openamp block.
 func (req *issueRequest) buildContract(issuerPubkey, policyPubkey string, clawback bool) map[string]any {
 	contract := map[string]any{
 		"name":          req.Name,

@@ -10,7 +10,7 @@ import (
 	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
-// OpenDAMP snapshot service (M2, opendamp-design.md section 4). Pure data
+// OpenDAMP snapshot service (M2, opendamp's DESIGN.md section 4). Pure data
 // plane: it validates, sequences, stores and serves signed policy snapshots.
 // It is live before the covenants (M1/M3) exist because holders and mirrors
 // need the publication channel and its transparency-log discipline either way;

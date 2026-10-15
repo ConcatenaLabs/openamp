@@ -9,8 +9,8 @@ adopted: `pi_0` commits to the asset id, which commits to the contract. The
 library, the `dmt-v1` format and the snapshot service described here are
 current.
 
-Companion to the protocol specification `doc/sequentia/opendamp-design.md` in
-the Sequentia node repository. That document is authoritative for the formats;
+Companion to the protocol specification, [`DESIGN.md`](https://github.com/ConcatenaLabs/opendamp/blob/main/DESIGN.md) in the
+opendamp repository. That document is authoritative for the formats;
 this note records what the M2 milestone delivers in `openampd`, what it
 deliberately refuses, and the wire formats it freezes.
 

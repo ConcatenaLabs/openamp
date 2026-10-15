@@ -325,7 +325,7 @@ func dampWhitelistRoot(list []string, holder string) ([32]byte, error) {
 //     policy update and halt through G(I).
 //   - There is NO genesis_policy and NO genesis_snapshot_hash. pi_0 commits to
 //     A's id, and A's id commits to this contract, so a contract carrying pi_0
-//     would have to contain a hash of itself (opendamp-design.md section 5).
+//     would have to contain a hash of itself (opendamp's DESIGN.md section 5).
 func (req *dampIssueRequest) dampContract(policyPubkey, verifierAsset string, q uint64) map[string]any {
 	openamp := map[string]any{
 		"version":           1,
@@ -454,7 +454,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Step 1 of opendamp-design.md section 5: issue V. Its id depends on nothing
+	// Step 1 of opendamp's DESIGN.md section 5: issue V. Its id depends on nothing
 	// about A, which is what breaks the circularity. Funding must cover this
 	// transaction's fee and the NEXT one's, because phase 2 spends this
 	// transaction's fee change as A's issuance input.
