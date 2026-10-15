@@ -52,6 +52,10 @@ which needs the first two.
 
 ## 3. Install and start the service
 
+The unit runs `deploy/openampd-loadwallet.sh` before every start: it loads
+`OPENAMPD_WALLET` on the node, because a wallet loaded at runtime is dropped
+whenever the node restarts.
+
 ```
 cp deploy/openampd.service /etc/systemd/system/openampd.service
 systemctl daemon-reload
@@ -114,7 +118,16 @@ and token outputs, which every Sequentia wallet can do per call
 
 ## 6. Redeploy
 
-`git pull && go build -o openampd/openampd ./openampd/cmd/openampd && systemctl restart openampd`.
+```
+cd /root/sequentia && git -C opendamp pull && cd openamp && git pull
+go build -o openampd/openampd ./openampd/cmd/openampd
+cp deploy/openampd.service /etc/systemd/system/ && systemctl daemon-reload
+systemctl restart openampd
+```
+
+A changed `opendamp/vectors/addresses.json` takes effect at that restart; it
+pins the programs used for new issuance only, since every issued asset carries
+its own program identities in its record.
 State (registry, keys, transparency log) persists in
 `/root/sequentia/openampd-data`.
 

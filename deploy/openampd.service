@@ -10,6 +10,9 @@ WorkingDirectory=/root/sequentia/openamp
 # Secrets (RPC auth, issuer token) live only on the box in this env file,
 # never in git. See deploy/DEPLOY.md for its contents.
 EnvironmentFile=/root/sequentia/openampd.env
+# The funding wallet is loaded dynamically, so a node restart drops it; load it
+# again before every start.
+ExecStartPre=/root/sequentia/openamp/deploy/openampd-loadwallet.sh
 ExecStart=/root/sequentia/openamp/openampd/openampd \
   -listen 127.0.0.1:8722 \
   -datadir /root/sequentia/openampd-data \
@@ -18,7 +21,7 @@ ExecStart=/root/sequentia/openamp/openampd/openampd \
   -rpcwallet ${OPENAMPD_WALLET} \
   -issuertoken ${OPENAMPD_ISSUER_TOKEN} \
   -feeasset ${OPENAMPD_FEE_ASSET} \
-  -feesats 1000 \
+  -feesats 20000 \
   -demoissuer
 Restart=on-failure
 RestartSec=5
