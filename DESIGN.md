@@ -23,7 +23,7 @@ Grounding docs: [`02-open-fee-market.md`](https://github.com/ConcatenaLabs/Seque
 
 ## 0. One paragraph
 
-OpenAMP is an open-source, self-hostable equivalent of Blockstream's AMP2 for Sequentia: issuers manage regulated assets (securities, funds, bonds) whose every transfer requires co-signature from an issuer-controlled policy server, with KYC whitelisting, categories, velocity limits, vesting, freezing, distributions, clawback, and auditor reports. Restricted assets live only in 2-of-2 taproot outputs (holder key + policy key: the "enclave"); the policy key is a FROST threshold, so freeing the asset requires compromising a quorum of signers, not one machine. The asset ID cryptographically commits to the policy key through the issuance contract hash, so the asset-to-policy binding is verifiable by anyone with no consensus change and no node state. Confidentiality is opt-in per asset with the same one-flag ease as any Sequentia asset: the amounts and asset tags are blinded to outside observers, while the policy server holds the blinding keys and therefore always sees who owns what. A restricted asset never appears in a fee output (so it can never leak into a block producer's coinbase); fees ride in an ordinary asset, and a holder who owns only the restricted asset pays through atomic in-transaction fee conversion with the issuer or any registered broker.
+OpenAMP is an open-source, self-hostable equivalent of Blockstream's AMP2 for Sequentia: issuers manage regulated assets (securities, funds, bonds) whose every transfer requires co-signature from an issuer-controlled policy server, with KYC whitelisting, categories, velocity limits, vesting, freezing, distributions, clawback, and auditor reports. Restricted assets live only in 2-of-2 taproot outputs (holder key + policy key: the "enclave"); the policy key is a FROST threshold, so freeing the asset requires compromising a quorum of signers, not one machine. The asset ID cryptographically commits to the policy key through the issuance contract hash, so the asset-to-policy binding is verifiable by anyone with no consensus change and no node state. Confidentiality is opt-in per transfer with the same one-flag ease as for any Sequentia asset: the amounts and asset tags are blinded to outside observers, while the policy server holds the blinding keys and therefore always sees who owns what. A restricted asset never appears in a fee output (so it can never leak into a block producer's coinbase); fees ride in an ordinary asset, and a holder who owns only the restricted asset pays through atomic in-transaction fee conversion with the issuer or any registered broker.
 
 ---
 
@@ -40,7 +40,7 @@ Where OpenAMP differs from AMP2:
 3. **Threshold policy key**: the co-signing key is a FROST t-of-n threshold by default, so a single compromised machine cannot sign the asset out of its enclave (§5).
 4. **Transparency log**: every policy decision is written to an append-only hash chain whose root is periodically committed on-chain, so issuers and regulators can audit the server after the fact (§6).
 5. **Fee flexibility**: because Sequentia fees can be paid in any accepted asset by any party, users can pay in the restricted asset itself (issuer bridges to the fee market atomically) or the issuer can sponsor the fee (§7). AMP2 on Liquid cannot: L-BTC is mandatory there.
-6. **Confidential-optional on a transparent chain**: Sequentia is transparent by default (a deliberate flip from Liquid), so confidentiality is opt-in per asset. OpenAMP makes that opt-in as easy for a restricted asset as for any other (§4).
+6. **Confidential-optional on a transparent chain**: Sequentia is transparent by default (a deliberate flip from Liquid), so confidentiality is opt-in per transfer. OpenAMP makes that opt-in as easy for a restricted asset as for any other (§4).
 
 ---
 
@@ -74,12 +74,13 @@ Elements already gives a genesis-anchored, stateless registry: the asset ID is a
     "policy_pubkey": "<32-byte x-only hex>",   // the FROST group public key
     "clawback": true,                 // clawback leaf present in the enclave tree
     "burn_allowed": true,             // OP_RETURN burns permitted
-    "confidential": false,            // whether the asset is issued/held blinded
     "policy_endpoints": ["https://amp.example-issuer.com"],
     "terms_hash": "<sha256 of legal terms>"
   }
 }
 ```
+
+The contract never records confidentiality, which is chosen per transfer (§4). Assets issued before that rule carry a `confidential` key in their frozen contract bytes and verify as they are, because the asset id commits to those exact bytes.
 
 `contract_hash = sha256(canonical-json)` is passed to `issueasset`/`rawissueasset`, so `asset_id` commits to `policy_pubkey`, the clawback terms, and whether the asset is confidential. Anyone holding the contract JSON (served by the registry and the policy server) verifies the binding offline by recomputing the entropy chain. Wallets refuse to treat an asset as an OpenAMP asset unless this verification passes. No consensus lookup table, no state bloat, no protocol change; full nodes remain oblivious.
 
@@ -89,18 +90,18 @@ Holder terms are fixed and disclosed at issuance: whether clawback exists, wheth
 
 ## 4. Confidentiality (opt-in, equal to any asset)
 
-Sequentia is transparent by default and confidentiality is opt-in per output; OpenAMP makes that opt-in as easy for a restricted asset as for an ordinary one. When an asset's contract sets `"confidential": true`:
+Sequentia is transparent by default and confidentiality is opt-in per output; OpenAMP makes that opt-in as easy for a restricted asset as for an ordinary one. An asset is never "a confidential asset": any holder may receive or move any restricted asset confidentially in a given transfer (`"confidential": true` on `POST /v1/transfers`). When a transfer is confidential:
 
-- Enclave addresses are **blech32 confidential taproot addresses**: the same 2-of-2 taproot output (§5) plus a blinding public key in the output nonce. The policy server returns them from the address endpoint exactly as it returns unblinded ones.
+- The recipient's enclave address is the **blech32 confidential taproot address**: the same 2-of-2 taproot output (§5) plus a blinding public key in the output nonce. The address endpoint returns it with `confidential=1`, alongside the unblinded form.
 - Amounts and asset tags are **blinded to outside observers**. The chain shows enclave outputs with committed values; an outsider cannot read who holds how much, nor even that a given output carries the restricted asset.
 - The **policy server holds the blinding keys** and therefore always sees who owns what. This is required for it to scan balances, enforce velocity limits and holder caps, and produce ownership and proof-of-balance reports. The holder learns the blinding key for their own outputs (to know their balance and to spend); the server learns it for every output (that is the point). Blinding-key distribution is part of the enclave-address handshake, not a separate disclosure step.
 - Transfers are constructed and blinded through the node's tested CT machinery, then policy-checked and co-signed, so no confidential-transaction crypto is reimplemented in `openampd`. Implementation approach, confirmed feasible on regtest against the real node:
   - `openampd` derives a per-holder-per-asset blinding key, builds the confidential enclave address (the enclave taproot scriptPubKey plus that blinding public key), and returns it from the address endpoint. Blinding succeeds with the standard requirement of at least two confidential outputs per transaction (Elements refuses to blind a lone output), which every transfer satisfies (recipient plus change, or plus the conversion output).
   - The server keeps the blinding keys in a node watch wallet (`importaddress` + `importblindingkey` on each confidential enclave address). That wallet's `listunspent` reports unblinded balances for scanning and reports, and `rawblindrawtransaction` / `unblindrawtransaction` run against it unblind the enclave inputs and blind the outputs during a transfer. The holder still just signs the returned sighashes; no blinding knowledge is needed on the wallet side.
 
-The honest limit, stated in the UI: a confidential restricted asset is confidential against third parties, never against the issuer or its policy server. That is the correct property for a regulated instrument (the issuer must be able to know who owns what at any time), and it is exactly AMP2's model on Liquid. It is narrower than a normal Sequentia confidential address, where nobody but the counterparties sees the amount.
+The honest limit, stated in the UI: a confidential transfer of a restricted asset is confidential against third parties, never against the issuer or its policy server. That is the correct property for a regulated instrument (the issuer must be able to know who owns what at any time), and it is exactly AMP2's model on Liquid. It is narrower than a normal Sequentia confidential address, where nobody but the counterparties sees the amount.
 
-Transparent (unblinded) assets remain fully supported for issuers who want public, auditable holdings; `confidential` is a per-asset choice made once at issuance. Status: DONE and proven end to end on regtest (`test/functional/feature_openamp_confidential.py`): confidential issuance and transfers blind on-chain, the server reports exact unblinded balances via its watch wallet, and fee conversion works confidentially. Requires the issuer's funding wallet to be CT-capable (`-blindedaddresses=1`).
+An enclave can hold explicit and blinded coins side by side, and every read the server serves (balances, holders, supply) unifies both views. Issuance can blind its own mint transaction (`"confidential": true` on the issue request), which marks nothing about the asset or its later transfers. `test/functional/feature_openamp_confidential.py` proves the whole path on regtest: blinded transfers on chain, exact unblinded balances from the server's watch wallet, and fee conversion inside a confidential transfer. The issuer's funding wallet needs no `-blindedaddresses` setting; every Sequentia wallet can produce blinded change per call.
 
 ---
 
@@ -169,30 +170,20 @@ The requirement for a regulated instrument is that the issuer (and its policy se
 - **Sequentia Core** (`getopenampaccount`, `signopenamptransfer`, the GUI's OpenAMP tab): the holder's side, described for holders in [`openamp-holder.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/openamp-holder.md). The account id and the enclave are derived offline from public keys, so a holder can check that the address they are paid at is the one the asset's own id implies rather than trusting the server to say. Signing recomputes each sighash from the transaction and refuses any that does not match what the server asked for, which the other wallets cannot do because they have no chain to check against. Core does not speak to the policy server itself: the Qt build carries no TLS backend, so the https half is left to whatever already has one.
 - **SWK web wallet** (`/wallet`): a managed-assets flow per issuer server: register the account key as an AID, restricted-asset balance rows rendered as ordinary rows (SEQ-equal-standing: no privileged labels), enclave receive address, and send through `/openamp/v1/transfers` with on-device schnorr signing of the returned sighashes. Fails soft if the policy server is unreachable.
 - **Ambra** (v0.10.3): the same flows over a Rust FFI schnorr signer (`openamp_xonly_pubkey` / `openamp_sign_sighash`, BIP32 `m/5/0`).
-- **Registry** (`sequentia-registry`): serves the `openamp` block (policy key, clawback, `confidential`, policy endpoints) for discovery; accepts x-only issuer keys. Wallets verify the asset-to-policy binding by fetching the contract from the policy server and recomputing the asset id.
+- **Registry** (`sequentia-registry`): serves the `openamp` block (policy key, clawback, policy endpoints) for discovery; accepts x-only issuer keys. Wallets verify the asset-to-policy binding by fetching the contract from the policy server and recomputing the asset id.
 - **Explorer** (nice-to-have, not built): badge OpenAMP assets, show the clawback flag and policy endpoints, render enclave outputs as "restricted (issuer-governed)".
 - **SeqDEX** (later): restricted assets trade only between registered users; the settlement PSET gets the policy co-sign like any transfer.
 
-For confidential assets, receive shows the blech32 enclave address, and the wallet's normal confidential toggle applies to restricted assets too, with UI copy that is honest the issuer still sees the amount.
+For a confidential receive, the wallet shows the blech32 enclave address: its normal confidential toggle applies to restricted assets too, with UI copy that is honest the issuer still sees the amount.
 
 ---
 
-## 11. Milestones
+## 11. Where each part is proven
 
-- **M0, enclave proof (regtest)**: DONE. Contract hashing, issuance into enclave addresses, python-recomputed asset ids validated by consensus, co-signed transfers, freeze-by-refusal, fee conversion, clawback. `feature_openamp_m0.py`.
-- **M1, `openampd` v0**: DONE. Chain follower, registration, per-asset policy, PSET validation + co-sign (software key), REST APIs. `feature_openamp_daemon.py`.
-- **M3, issuer operations**: DONE. Assignments, distributions with snapshot reports, vesting, velocity, holder caps, issuer authorization endpoint, ownership/proof-of-balance reports, anchored transparency log, clawback ceremony.
-- **M4, ecosystem + deploy**: DONE. Box deployment, live BONDX on the public testnet, registry, SWK and Ambra integration.
-- **M5, confidentiality + threshold + trading**: opt-in confidential assets end to end DONE (blech32 enclave addresses, watch-wallet blinding-key handling, blinded co-sign; `feature_openamp_confidential.py`); the `PolicySigner` interface (single-key backend on testnet, documented FROST/MPC seam) DONE. Remaining: the FROST quorum backend itself (mainnet prep, built and hardened behind the interface with no chain change) and SeqDEX registered-user trading.
+Against a real node on regtest, in the node repository's `test/functional/`:
 
-Repo: public `openamp` (Go daemon + specs). Chain-side changes: none.
+- `feature_openamp_m0.py`: contract hashing, issuance into enclave addresses, asset ids recomputed independently and accepted by consensus, co-signed transfers, freeze by refusal, fee conversion, clawback.
+- `feature_openamp_daemon.py`: a real `openampd` through registration, per-asset policy, co-signing, hosted issuance, fee conversion, freeze, velocity, holder caps, clawback, ownership reports and the anchored transparency log.
+- `feature_openamp_confidential.py`: opt-in confidential transfers end to end (blech32 enclave addresses, watch-wallet blinding keys, blinded co-signing).
 
----
-
-## 12. Open questions (for Andreas)
-
-Resolved: name OpenAMP; clawback default ON; the box hosts a shared testnet policy server; no consensus-covenant tier (scrapped); confidentiality opt-in and as easy as any asset; policy key is a FROST threshold. Still open:
-
-1. **FROST parameters**: default t-of-n (2-of-3 proposed) and who holds the shares (issuer + which operators).
-2. **Confidential by default?**: issue new restricted assets confidential by default, or transparent unless the issuer opts in.
-3. **Continuity leaf**: default OFF (rely on the threshold key), confirm.
+In this repository, `go test ./...` covers the policy engine, the Elements primitives against golden vectors, and the FROST 2-of-3 backend (distributed key generation and signing). OpenAMP needs no change to the chain.
