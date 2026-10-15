@@ -4,7 +4,7 @@ Open-source issuer-governed assets for the Sequentia network: a self-hostable eq
 
 This is testnet software. Everything here runs against the Sequentia public testnet (parent chain: Bitcoin testnet4); there is no mainnet.
 
-Design document: [`doc/sequentia/openamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/HEAD/doc/sequentia/openamp-design.md) in the node repository. Frozen format specifications live under [`spec/`](spec/).
+Design document: [`DESIGN.md`](DESIGN.md). Frozen format specifications live under [`spec/`](spec/).
 
 ## The live instance, and what it serves
 
@@ -147,7 +147,7 @@ Mints directly into the initial holder's enclave; `clawback` defaults to true an
 
 #### Network-enforced issuance (OpenDAMP)
 
-A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`doc/sequentia/opendamp-design.md`](https://github.com/ConcatenaLabs/Sequentia/blob/master/doc/sequentia/opendamp-design.md); what the shipped covenants do and do NOT enforce: [`STATUS.md`](https://github.com/ConcatenaLabs/opendamp/blob/main/STATUS.md) in the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenant programs and the `opendamp` tool — read it before describing a policy to an issuer. Every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
+A second enforcement tier, elected per asset at issuance and committed into the asset id. Units of a network-enforced asset live in Simplicity **user covenants** `C_U(X)` and every transfer is policed on chain by a **verifier covenant** `C_V(pi)` the holder spends alongside their own coins. There is no co-signature and no enclave: transfers keep working with this policy server switched off, which is the tier's headline property. Protocol: [`DESIGN.md`](https://github.com/ConcatenaLabs/opendamp/blob/main/DESIGN.md) in the opendamp repository; what the shipped covenants do and do NOT enforce: [`STATUS.md`](https://github.com/ConcatenaLabs/opendamp/blob/main/STATUS.md) in the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenant programs and the `opendamp` tool — read it before describing a policy to an issuer. Every predicate in the design document — the whitelist (sender and recipient), the blacklist by outpoint, the transfer limit and the height windows — is consensus-enforced; velocity and holder caps remain registrar-side.
 
 Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing at the CMR pinning file `opendamp registry` produces ([`vectors/addresses.json`](https://github.com/ConcatenaLabs/opendamp/blob/main/vectors/addresses.json) in the opendamp repository is a valid input). Unset, every network-enforcement endpoint answers `501 {"error": "network enforcement is not configured on this policy server"}`. Unlike hosted issuance this needs **no** `-demoissuer`: no issuer private key is held server-side, because `issuer_update_key` is the issuer's own key and this server never signs a transfer of the asset.
 

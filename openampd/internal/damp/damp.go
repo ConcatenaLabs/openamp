@@ -1,8 +1,7 @@
 // Package damp is the OpenDAMP M2 policy-commitment library: the commitment
 // constructions an OpenDAMP verifier covenant checks on-chain, computed
 // off-chain by the policy server (and by wallets assembling proofs). It
-// implements the formats frozen in the node repo's
-// doc/sequentia/opendamp-design.md sections 3 and 4:
+// implements the formats frozen in sections 3 and 4 of opendamp's DESIGN.md:
 //
 //   - the policy commitment pi over a PolicyHeader (section 3.1),
 //   - the "dmt-v1" sorted dense Merkle tree the covenants verify against, in
