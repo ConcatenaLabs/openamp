@@ -21,7 +21,9 @@ go test ./...
 go build -o openampd/openampd ./openampd/cmd/openampd
 ```
 
-There is no CI. `go build ./... && go test ./...` before every PR is the whole gate.
+There is no CI. `go build ./... && go test ./...` before every PR is the whole gate, plus
+`e2e/supply_cap.py` (a real node and openampd; its docstring has the command) for a change to
+issuance, minting or the supply cap.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -38,6 +40,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/internal/elements/` | minimal Elements tx codec, taproot, sighash — golden-vectored |
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
+| `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
 | `openampd/testdata/opendamp-addresses.json` | a pinned copy of `vectors/addresses.json` from the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenants; the Go mirror tests check against it, so copy it again whenever opendamp's programs change |
 | `spec/` | frozen formats (contract v1), venue/wallet integration spec |
 | `tools/gen_vectors.py` | golden-vector generator |
@@ -71,6 +74,10 @@ from GitHub and builds there — never edit source on the server, never copy bin
 - **Reorg awareness is not optional.** Sequentia reorganises whenever Bitcoin reorganises, so the
   chain follower re-marks transfer records above a fork point as unconfirmed. Velocity accounting
   and ownership reports depend on it.
+- **The server never holds a reissuance token.** Every token goes into a supply cap in the
+  issuance transaction itself (`supplycap.go`), and every mint goes through the covenant via
+  the `token-covenants` tool. Do not add a path that pays a token to the wallet or mints from
+  one; a token in the wallet is unlimited mint authority for whoever holds that wallet's key.
 - **`-demoissuer` holds issuer keys server-side.** It is a testnet demo flag. A production issuer
   keeps that key offline.
 

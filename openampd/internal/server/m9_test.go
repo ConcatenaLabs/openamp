@@ -41,6 +41,7 @@ func newM9Server(t *testing.T, cfg Config) (*Server, *store.Store, *oa4Node) {
 	for i := range s.genesis {
 		s.genesis[i] = byte(i + 1)
 	}
+	withFakeCapTool(s)
 	return s, st, node
 }
 

@@ -3,108 +3,24 @@ package server
 import (
 	"encoding/hex"
 	"net/http"
+	"strconv"
 
 	"github.com/ConcatenaLabs/openamp/openampd/internal/elements"
-	"github.com/ConcatenaLabs/openamp/openampd/internal/rpc"
+	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
-// OA-6: reissue MORE of an existing restricted asset into a target enclave, for
-// a Depository-Receipt programme whose circulating supply must change for real.
+// OA-6: mint MORE of an existing restricted asset into a target enclave, for a
+// Depository-Receipt programme whose circulating supply must change for real.
 //
-// The critical node hazard (see the reissuance memory): a reissuance spent from
-// an UNBLINDED reissuance token is a phantom, invalid transaction, because the
-// issuance's asset-blinding-nonce field would be zero and consensus then reads
-// the input as a NEW issuance rather than a reissuance. So the token MUST be
-// blinded first; its non-zero asset blinding factor becomes the reissuance
-// nonce. This file re-blinds the token when needed (a per-call blech32 address,
-// never the node's -blindedaddresses flag), then hand-builds the reissuance and
-// only broadcasts it after testmempoolaccept accepts it, so a malformed
-// reissuance can never spend funds. A caller request_id makes the mint
-// idempotent: a retry returns the same txid and never double-mints.
-
-// reissueParams are the fully resolved pieces of a reissuance, kept explicit so
-// the transaction assembly is a pure function the tests can drive without a node.
-type reissueParams struct {
-	assetDisplay    [32]byte // display-order asset id
-	entropyInternal [32]byte // final asset entropy (internal order)
-	precision       uint64
-
-	tokenTxid        string
-	tokenVout        uint32
-	tokenAbf         [32]byte // asset blinding factor of the spent token (non-zero)
-	tokenAtoms       uint64   // token amount to re-output (keeps the token alive)
-	tokenChangeNonce []byte   // blinding pubkey so the re-output token stays blinded
-	tokenChangeSpk   []byte
-
-	reissueAtoms uint64 // newly minted units
-	enclaveSpk   []byte // target enclave scriptPubKey
-	enclaveNonce []byte // blinding pubkey for the minted output (confidential asset); nil/empty = explicit
-
-	feeTxid        string
-	feeVout        uint32
-	feeChangeSats  uint64
-	feeChangeNonce []byte // blinding pubkey (>=2 blinded outputs for a blindable tx)
-	feeChangeSpk   []byte
-
-	feeAssetDisplay [32]byte
-	feeSats         uint64
-}
-
-// buildReissuanceTx assembles the pre-blind (explicit) reissuance transaction.
-// The token input carries the Elements reissuance issuance: a non-zero nonce
-// (the token's asset blinding factor) marks it as a reissuance rather than a new
-// issuance, the entropy re-derives the asset id, the amount is the explicit
-// newly minted quantity, and the inflation-keys field is null (a reissuance
-// mints no new tokens). The newly minted units go to the target enclave; the
-// token is re-output to a blinded address so it survives for the next mint.
-func buildReissuanceTx(p reissueParams) *elements.Tx {
-	tx := &elements.Tx{Version: 2}
-
-	// Token input, bearing the reissuance issuance.
-	tx.In = append(tx.In, &elements.TxIn{
-		Prevout: elements.OutPoint{Hash: internalHash(p.tokenTxid), N: p.tokenVout},
-		Issuance: &elements.AssetIssuance{
-			Nonce:         p.tokenAbf,                             // non-zero ⇒ reissuance
-			Entropy:       p.entropyInternal,                      // final asset entropy
-			Amount:        elements.ExplicitValue(p.reissueAtoms), // explicit minted amount
-			InflationKeys: []byte{0},                              // null: no new tokens
-			Denomination:  p.precision,
-		},
-	})
-	// Fee funding input (a wallet coin).
-	tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(p.feeTxid), N: p.feeVout}})
-
-	// Minted units to the target enclave. Explicit for a transparent asset
-	// (byte-identical to pre-W5); for a confidential asset the caller passes the
-	// holder's enclave blinding pubkey as the nonce so the mint blinds and the
-	// DR mint amount does not leak on-chain.
-	enclaveNonce := p.enclaveNonce
-	if len(enclaveNonce) == 0 {
-		enclaveNonce = elements.NullNonce()
-	}
-	tx.Out = append(tx.Out, &elements.TxOut{
-		Asset: elements.ExplicitAsset(p.assetDisplay), Value: elements.ExplicitValue(p.reissueAtoms),
-		Nonce: enclaveNonce, ScriptPubKey: p.enclaveSpk,
-	})
-	// Re-output the reissuance token to a blinded address so it stays blinded and
-	// reusable for the next reissuance.
-	tx.Out = append(tx.Out, &elements.TxOut{
-		Asset: elements.ExplicitAsset(p.assetDisplay), Value: elements.ExplicitValue(p.tokenAtoms),
-		Nonce: p.tokenChangeNonce, ScriptPubKey: p.tokenChangeSpk,
-	})
-	// Blinded fee change (gives the >=2 blinded outputs a blindable tx needs).
-	tx.Out = append(tx.Out, &elements.TxOut{
-		Asset: elements.ExplicitAsset(p.feeAssetDisplay), Value: elements.ExplicitValue(p.feeChangeSats),
-		Nonce: p.feeChangeNonce, ScriptPubKey: p.feeChangeSpk,
-	})
-	// Fee output.
-	tx.Out = append(tx.Out, &elements.TxOut{
-		Asset: elements.ExplicitAsset(p.feeAssetDisplay), Value: elements.ExplicitValue(p.feeSats),
-		Nonce: elements.NullNonce(), ScriptPubKey: nil,
-	})
-	tx.NormalizeWitness()
-	return tx
-}
+// Every mint goes through the asset's supply cap (supplycap.go): the covenant
+// that holds the reissuance token reissues on its own input, counts the amount
+// against the cap fixed when it was made, and re-creates itself with the new
+// count. The token is explicit, as the covenant requires; Sequentia reissues
+// from an explicit token directly (its issuance carries a fixed sentinel nonce
+// in place of a blinding factor), so there is nothing to blind first. The mint
+// is built by the token-covenants tool and only broadcast after
+// testmempoolaccept accepts it. A caller request_id makes the mint idempotent:
+// a retry returns the same txid and never mints twice.
 
 // blindedWalletOutput resolves a fresh per-call blinded (blech32) wallet
 // destination: its blinding pubkey (used as an output nonce) and its
@@ -133,35 +49,17 @@ func (s *Server) blindedWalletOutput() (nonce []byte, spk []byte, err error) {
 
 var errNoBlinding = &PolicyRefusal{Reason: "wallet returned no blinding key for a per-call blinded address"}
 
-// tokenUTXO locates the reissuance token in the server wallet. The token is a
-// spendable coin of the demo wallet (issuance paid it there, and a re-blind
-// re-outputs it to a demo-wallet blinded address), so the demo wallet lists it
-// with its blinders when confidential.
-func (s *Server) tokenUTXO(tokenID string) (*rpc.ConfUnspent, error) {
-	us, err := s.wallet.ListUnspentAll()
-	if err != nil {
-		return nil, err
-	}
-	for i := range us {
-		if us[i].Asset == tokenID {
-			cp := us[i]
-			return &cp, nil
-		}
-	}
-	return nil, nil
-}
-
-// handleReissue mints more of an existing restricted asset into a target enclave.
+// handleReissue mints more of an existing restricted asset into a target
+// enclave, through the asset's supply cap.
 func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Asset     string `json:"asset"`
 		TargetAID string `json:"target_aid"`
 		Atoms     uint64 `json:"atoms"`
 		RequestID string `json:"request_id"` // idempotency key; a retry returns the same txid
-		// Confidential blinds THIS mint's enclave output to the target holder's
-		// derived blinding key (per-transfer choice, default false; never an
-		// asset property). The token-change and fee-change outputs blind either
-		// way, so the reissuance transaction always blinds.
+		// Confidential is refused for a mint: the covenant reads the amount from
+		// the issuance on its own input, which is explicit, so blinding the
+		// minted output would hide nothing. The holder blinds a later transfer.
 		Confidential bool `json:"confidential"`
 	}
 	if err := decodeBody(r, &req); err != nil {
@@ -176,7 +74,11 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "request_id is required (idempotency key; a retry returns the same reissue txid)")
 		return
 	}
-	targetTree, targetUser, asset, err := s.enclaveFor(req.TargetAID, req.Asset)
+	if req.Confidential {
+		httpErr(w, 400, "a mint cannot be confidential: the supply cap counts the issuance amount on its own input, which is public, so a blinded output would hide nothing. Mint explicitly; the holder chooses confidentiality on a later transfer")
+		return
+	}
+	targetTree, _, asset, err := s.enclaveFor(req.TargetAID, req.Asset)
 	if err != nil {
 		httpErr(w, 404, "%v", err)
 		return
@@ -201,12 +103,26 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 	// txid fixed) but MarkReissue was lost. Rebroadcast the IDENTICAL stored tx: the
 	// node dedupes (same txid), and if the first reissuance already confirmed the
 	// rebroadcast is a harmless no-op. Either way the mint is the same single tx, so
-	// this can never mint a second time. Then complete the idempotency record.
+	// this can never mint a second time. Then complete the idempotency record and
+	// the supply cap's next coin.
 	if pr, ok := s.st.GetPendingReissue(req.RequestID); ok {
 		if _, err := s.wallet.SendRawTransaction(pr.SignedHex); err != nil {
 			// Already-in-mempool / already-in-chain / spent-inputs all mean the
 			// reserved tx is (or was) live; the reserved txid is authoritative.
 			s.st.AppendLog("reissue-rebroadcast", map[string]any{"request_id": req.RequestID, "txid": pr.Txid, "note": err.Error()})
+		}
+		if pr.Asset != "" {
+			if err := s.st.Update(func(st *store.State) error {
+				if a, ok := st.Assets[pr.Asset]; ok && a.SupplyCap != nil && a.SupplyCap.CoinTxid != pr.Txid {
+					a.SupplyCap.CoinTxid, a.SupplyCap.CoinVout = pr.Txid, 0
+					a.SupplyCap.Minted = pr.NextMinted
+					a.SupplyCap.ScriptPubKey, a.SupplyCap.Address = pr.NextScriptPubKey, pr.NextAddress
+				}
+				return nil
+			}); err != nil {
+				httpErr(w, 500, "persist supply cap: %v", err)
+				return
+			}
 		}
 		if err := s.st.MarkReissue(req.RequestID, pr.Txid); err != nil {
 			httpErr(w, 500, "persist reissue: %v", err)
@@ -216,114 +132,50 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Locate the reissuance token and ensure it is blinded before spending.
-	tok, err := s.tokenUTXO(asset.Token)
+	// The supply cap: configured here, holding the token, with room for the mint.
+	if s.tool == nil {
+		httpErr(w, 501, supplyCapNotConfigured)
+		return
+	}
+	c := asset.SupplyCap
+	if c == nil {
+		httpErr(w, 409, "this asset's reissuance token is in no supply cap, so it cannot be minted: move it in with POST /v1/issuer/supply-cap")
+		return
+	}
+	if c.OperatorKey != s.capOperatorKey {
+		httpErr(w, 409, "this asset's supply cap is held under operator key %s, not this server's: only that key's holder mints", c.OperatorKey)
+		return
+	}
+	if total := c.Minted + req.Atoms; total < c.Minted || total > c.Cap {
+		httpErr(w, 409, "a mint of %d would bring the total minted through the supply cap above its cap of %d (%d minted, %d left)",
+			req.Atoms, c.Cap, c.Minted, c.Cap-min(c.Cap, c.Minted))
+		return
+	}
+	if !s.utxoUnspent(c.CoinTxid, c.CoinVout) {
+		httpErr(w, 409, "the supply cap's coin %s:%d is spent by a transaction this server did not make (a rekey by the cold key?): record it with POST /v1/issuer/supply-cap/rekey", c.CoinTxid, c.CoinVout)
+		return
+	}
+	signedHex, built, err := s.capMintTx(asset, targetTree.ScriptPubKey(), req.Atoms)
 	if err != nil {
-		httpErr(w, 502, "token scan: %v", err)
-		return
-	}
-	if tok == nil {
-		httpErr(w, 409, "reissuance token not found in the server wallet")
-		return
-	}
-	if tok.AssetBlinder == "" || tok.AssetBlinder == zeroBlinder {
-		// Re-blind first (the phantom-tx hazard). Broadcasts a token -> blinded
-		// address move; the caller retries the same request_id once it is in the
-		// wallet (0-conf is fine to chain from, nothing is final yet).
-		reblindTxid, err := s.reblindToken(tok)
-		if err != nil {
-			httpErr(w, 502, "re-blind token: %v", err)
+		if pr, ok := err.(*PolicyRefusal); ok {
+			httpErr(w, 503, "%s", pr.Reason)
 			return
 		}
-		s.st.AppendLog("reissue-reblind", map[string]any{"asset": asset.ID, "token": asset.Token, "txid": reblindTxid})
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusAccepted)
-		httpJSON(w, map[string]any{
-			"status": "reblinding", "reblind_txid": reblindTxid,
-			"detail": "reissuance token is being blinded; retry with the same request_id once it confirms",
-		})
+		httpErr(w, 502, "%v", err)
 		return
 	}
-
-	// Blinded token: assemble the reissuance.
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
-	if err != nil {
-		httpErr(w, 502, "fee funding: %v", err)
-		return
-	}
-	if feeIn == nil {
-		httpErr(w, 503, "policy server has no fee funds")
-		return
-	}
-	tokenNonce, tokenSpk, err := s.blindedWalletOutput()
-	if err != nil {
-		httpErr(w, 502, "token blinded output: %v", err)
-		return
-	}
-	feeNonce, feeSpk, err := s.blindedWalletOutput()
-	if err != nil {
-		httpErr(w, 502, "fee blinded output: %v", err)
-		return
-	}
-	// Confidential mint request (per transfer, any asset): blind the minted
-	// enclave output to the holder's derived blinding key (the same enclave
-	// conf nonce mechanism transfers use, which also registers the enclave in
-	// the watch wallet), so a DR mint does not leak the minted amount. An
-	// explicit request keeps the explicit mint byte-identically.
-	var enclaveNonce []byte
-	if req.Confidential {
-		enclaveNonce, err = s.enclaveConfNonce(asset.ID, elements.MustHex32(targetUser.Pubkeys[0]), hex.EncodeToString(targetTree.ScriptPubKey()))
-		if err != nil {
-			httpErr(w, 500, "confidential mint output: %v", err)
-			return
-		}
-	}
-
-	p := reissueParams{
-		assetDisplay:    elements.MustHex32(asset.ID),
-		entropyInternal: internalHash(asset.Entropy),
-		precision:       uint64(asset.Precision),
-		tokenTxid:       tok.TxID, tokenVout: tok.Vout,
-		tokenAbf: mustHex32Bytes(tok.AssetBlinder), tokenAtoms: sats(tok.Amount),
-		tokenChangeNonce: tokenNonce, tokenChangeSpk: tokenSpk,
-		reissueAtoms: req.Atoms, enclaveSpk: targetTree.ScriptPubKey(), enclaveNonce: enclaveNonce,
-		feeTxid: feeIn.txid, feeVout: feeIn.vout,
-		feeChangeSats: feeIn.sats - s.cfg.FeeSats, feeChangeNonce: feeNonce, feeChangeSpk: feeSpk,
-		feeAssetDisplay: elements.MustHex32(s.cfg.FeeAsset), feeSats: s.cfg.FeeSats,
-	}
-	tx := buildReissuanceTx(p)
-
-	// Blind via the node's tested CT machinery: always the token-change and
-	// fee-change outputs, plus the minted enclave output iff the request asked
-	// for a confidential mint.
-	blinded, err := s.blindTx(tx)
-	if err != nil {
-		httpErr(w, 500, "blind reissuance: %v", err)
-		return
-	}
-	signed, err := s.wallet.SignRawTransactionWithWallet(hex.EncodeToString(blinded.Serialize()))
-	if err != nil {
-		httpErr(w, 502, "sign: %v", err)
-		return
-	}
-	if !signed.Complete {
-		httpErr(w, 502, "reissuance signing incomplete: %+v", signed.Errors)
-		return
-	}
-	// Safety gate: never broadcast a reissuance the node would reject. A malformed
-	// reissuance (e.g. a mis-derived nonce) is refused here, spending nothing.
-	if err := s.mempoolGate("reissue", signed.Hex, map[string]any{
+	// Safety gate: never broadcast a mint the node would reject.
+	if err := s.mempoolGate("reissue", signedHex, map[string]any{
 		"asset": asset.ID, "target": req.TargetAID, "request_id": req.RequestID,
 	}); err != nil {
 		httpErr(w, 502, "%v", err)
 		return
 	}
 	// Compute the txid deterministically from the signed tx and RESERVE the
-	// request_id (the exact signed tx + txid) BEFORE broadcast. A DR mint regenerates
-	// its own token input, so it has no UTXO-exhaustion backstop; this reservation is
-	// the sole guard against a double-mint if we crash between broadcast and the
-	// idempotency write. A retry rebroadcasts this identical tx (same txid).
-	rawSigned, err := hex.DecodeString(signed.Hex)
+	// request_id (the exact signed tx + txid + the covenant's next coin) BEFORE
+	// broadcast: the reservation is the guard against a double mint if this
+	// process dies between broadcast and the idempotency write.
+	rawSigned, err := hex.DecodeString(signedHex)
 	if err != nil {
 		httpErr(w, 500, "decode signed reissuance: %v", err)
 		return
@@ -334,13 +186,32 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reissueTxid := signedTx.TxID()
-	if err := s.st.ReserveReissue(req.RequestID, signed.Hex, reissueTxid); err != nil {
+	nextMinted, err := strconv.ParseUint(built.NextMinted, 10, 64)
+	if err != nil || nextMinted != c.Minted+req.Atoms {
+		httpErr(w, 500, "the tool's next count %q is not %d", built.NextMinted, c.Minted+req.Atoms)
+		return
+	}
+	nextSpk := mustHexBytes(built.Successor.ScriptPubKey)
+	nextAddr := s.chainAddress(nextSpk, built.Successor.Address)
+	if err := s.st.ReservePendingReissue(req.RequestID, store.PendingReissue{
+		SignedHex: signedHex, Txid: reissueTxid, Asset: asset.ID,
+		NextMinted: nextMinted, NextScriptPubKey: built.Successor.ScriptPubKey, NextAddress: nextAddr,
+	}); err != nil {
 		httpErr(w, 500, "reserve reissue: %v", err)
 		return
 	}
-	txid, err := s.wallet.SendRawTransaction(signed.Hex)
+	txid, err := s.wallet.SendRawTransaction(signedHex)
 	if err != nil {
 		httpErr(w, 502, "broadcast: %v", err)
+		return
+	}
+	if err := s.st.Update(func(st *store.State) error {
+		a := st.Assets[asset.ID].SupplyCap
+		a.CoinTxid, a.CoinVout, a.Minted = reissueTxid, 0, nextMinted
+		a.ScriptPubKey, a.Address = built.Successor.ScriptPubKey, nextAddr
+		return nil
+	}); err != nil {
+		httpErr(w, 500, "persist supply cap: %v", err)
 		return
 	}
 	// Record so a retry short-circuits to the completed record (also clears the
@@ -351,74 +222,10 @@ func (s *Server) handleReissue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.st.AppendLog("reissue", map[string]any{
 		"asset": asset.ID, "target": req.TargetAID, "atoms": req.Atoms, "txid": txid,
+		"minted_through_cap": nextMinted, "cap": c.Cap,
 	})
 	httpJSON(w, map[string]any{
 		"reissue_txid": txid, "status": "broadcast", "target_aid": req.TargetAID, "atoms": req.Atoms,
+		"minted_atoms": nextMinted, "cap_atoms": c.Cap, "room_atoms": c.Cap - nextMinted,
 	})
-}
-
-// reblindToken moves the (unblinded) reissuance token to a fresh blinded wallet
-// address, so its next spend carries a non-zero asset blinding factor. The token
-// output and a fee-change output are blinded (the two blinded outputs a blindable
-// tx needs); the wallet signs both its own inputs.
-func (s *Server) reblindToken(tok *rpc.ConfUnspent) (string, error) {
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
-	if err != nil {
-		return "", err
-	}
-	if feeIn == nil {
-		return "", &PolicyRefusal{Reason: "policy server has no fee funds"}
-	}
-	tokenNonce, tokenSpk, err := s.blindedWalletOutput()
-	if err != nil {
-		return "", err
-	}
-	feeNonce, feeSpk, err := s.blindedWalletOutput()
-	if err != nil {
-		return "", err
-	}
-	tokenAssetID := elements.MustHex32(tok.Asset)
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
-	tx := &elements.Tx{Version: 2}
-	tx.In = append(tx.In,
-		&elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(tok.TxID), N: tok.Vout}},
-		&elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(feeIn.txid), N: feeIn.vout}},
-	)
-	tx.Out = append(tx.Out,
-		&elements.TxOut{Asset: elements.ExplicitAsset(tokenAssetID), Value: elements.ExplicitValue(sats(tok.Amount)),
-			Nonce: tokenNonce, ScriptPubKey: tokenSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
-			Nonce: feeNonce, ScriptPubKey: feeSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
-			Nonce: elements.NullNonce(), ScriptPubKey: nil},
-	)
-	tx.NormalizeWitness()
-	blinded, err := s.blindTx(tx)
-	if err != nil {
-		return "", err
-	}
-	signed, err := s.wallet.SignRawTransactionWithWallet(hex.EncodeToString(blinded.Serialize()))
-	if err != nil {
-		return "", err
-	}
-	if !signed.Complete {
-		return "", &PolicyRefusal{Reason: "re-blind signing incomplete"}
-	}
-	// Safety gate (W-1): the re-blind spends the token + a fee coin; refuse to
-	// broadcast one the node rejects.
-	if err := s.mempoolGate("reissue-reblind", signed.Hex, map[string]any{"token": tok.Asset}); err != nil {
-		return "", err
-	}
-	return s.wallet.SendRawTransaction(signed.Hex)
-}
-
-// mustHex32Bytes parses a 32-byte hex blinder; a short/empty value yields zeros
-// (which the caller has already excluded before spending).
-func mustHex32Bytes(h string) [32]byte {
-	var out [32]byte
-	b, err := hex.DecodeString(h)
-	if err == nil && len(b) == 32 {
-		copy(out[:], b)
-	}
-	return out
 }

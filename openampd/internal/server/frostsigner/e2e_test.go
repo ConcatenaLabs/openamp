@@ -180,6 +180,7 @@ func newE2EServer(t *testing.T) (http.Handler, *store.Store, *e2eNode) {
 	}
 	srv, err := server.New(server.Config{
 		FeeAsset: e2eFeeID, FeeSats: 100, DemoIssuer: true, IssuerToken: "tok", Signer: "frost",
+		CovenantTool: e2eCapTool{}, CapColdKey: "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
 	}, st, cl, cl)
 	if err != nil {
 		t.Fatal(err)
@@ -385,4 +386,18 @@ func TestFrost_DealerOverrideThroughTheDaemonPath(t *testing.T) {
 	if code != 200 || asset["policy_pub"] != hex.EncodeToString(groupPoint[1:]) {
 		t.Fatalf("policy_pub %v is not the group key's x-only form", asset["policy_pub"])
 	}
+}
+
+// e2eCapTool stands in for the token-covenants tool: issuance asks it only for
+// a supply cap's instance and its address, which it answers with fixed values.
+type e2eCapTool struct{}
+
+func (e2eCapTool) Run(args []string, _ []byte) ([]byte, error) {
+	switch strings.Join(args[:2], " ") {
+	case "supply-cap instance":
+		return []byte(`{"instance":2,"template_hash":"f93a","params":{},"slots":{},"genesis":"00"}`), nil
+	case "supply-cap address":
+		return []byte(`{"script_pubkey":"5120` + strings.Repeat("5c", 32) + `","address":{}}`), nil
+	}
+	return nil, fmt.Errorf("e2eCapTool: unexpected %v", args)
 }

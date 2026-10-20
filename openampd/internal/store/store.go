@@ -114,6 +114,35 @@ type Asset struct {
 	// of the contract. Epoch 0 is the original (v1) derivation and is omitted,
 	// so every record written before rotation existed stays byte-compatible.
 	BlindEpoch uint32 `json:"blind_epoch,omitempty"`
+	// SupplyCap is the covenant that holds the asset's reissuance token: every
+	// mint goes through it, counted against a cap fixed when it was made.
+	// Absent while the token has not moved in (assets issued before supply
+	// caps, until their token is moved), and then the asset cannot be minted.
+	SupplyCap *SupplyCap `json:"supply_cap,omitempty"`
+}
+
+// SupplyCap records an asset's supply-cap covenant (sequentia-contracts'
+// templates/supply_cap): the instance the token-covenants tool derives, the
+// count it carries and the coin that holds the token now. Keys are x-only hex.
+type SupplyCap struct {
+	// Instance is the tool's instance file (template hash, parameters and the
+	// chain's genesis). A rekey replaces it, since the keys are parameters.
+	Instance    json.RawMessage `json:"instance"`
+	Cap         uint64          `json:"cap"`          // the most ever minted through the covenant
+	Minted      uint64          `json:"minted"`       // minted through it so far
+	OperatorKey string          `json:"operator_key"` // signs mints: this server's key
+	ColdKey     string          `json:"cold_key"`     // signs a rekey: kept off this server
+	// The coin holding the token, its script and address (which change with
+	// every mint, the count being in the coin's state) and its token amount.
+	CoinTxid     string `json:"coin_txid"`
+	CoinVout     uint32 `json:"coin_vout"`
+	ScriptPubKey string `json:"script_pubkey"`
+	Address      string `json:"address"`
+	TokenAtoms   uint64 `json:"token_atoms"`
+	// IssuedTokenAtoms is the token amount the asset's issuance created, when
+	// known: the coin must hold all of it, or a coin outside the covenant could
+	// still mint.
+	IssuedTokenAtoms uint64 `json:"issued_token_atoms,omitempty"`
 }
 
 // DampBinding is everything a holder or auditor needs to act on a
@@ -273,6 +302,9 @@ type Store struct {
 	state *State
 }
 
+// Dir is the state directory.
+func (s *Store) Dir() string { return filepath.Dir(s.path) }
+
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -371,6 +403,12 @@ type PendingDampIssuance struct {
 	FundingTxid string `json:"funding_txid"`
 	FundingVout uint32 `json:"funding_vout"`
 	FundingSats uint64 `json:"funding_sats"`
+
+	// SupplyCap and CapColdKey configure the supply cap A's reissuance token
+	// moves into at completion: the most ever minted through it (0: none) and
+	// the cold key that can replace its operator key.
+	SupplyCap  uint64 `json:"supply_cap"`
+	CapColdKey string `json:"cap_cold_key"`
 
 	Pi             string          `json:"pi"`
 	Snapshot       json.RawMessage `json:"snapshot"`         // canonical seq-0 snapshot/v1 bytes
@@ -628,6 +666,12 @@ func (s *Store) MarkReissue(requestID, txid string) error {
 type PendingReissue struct {
 	SignedHex string `json:"signed_hex"`
 	Txid      string `json:"txid"`
+	// For a mint through a supply cap: the asset and the covenant's next coin,
+	// so a retry after a crash records the count the broadcast mint left.
+	Asset            string `json:"asset,omitempty"`
+	NextMinted       uint64 `json:"next_minted,omitempty"`
+	NextScriptPubKey string `json:"next_script_pubkey,omitempty"`
+	NextAddress      string `json:"next_address,omitempty"`
 }
 
 // GetPendingReissue returns the reservation for a request_id, if any.
@@ -652,6 +696,18 @@ func (s *Store) ReserveReissue(requestID, signedHex, txid string) error {
 			st.PendingReissues = map[string]*PendingReissue{}
 		}
 		st.PendingReissues[requestID] = &PendingReissue{SignedHex: signedHex, Txid: txid}
+		return nil
+	})
+}
+
+// ReservePendingReissue is ReserveReissue with the supply cap's next coin.
+func (s *Store) ReservePendingReissue(requestID string, p PendingReissue) error {
+	return s.Update(func(st *State) error {
+		if st.PendingReissues == nil {
+			st.PendingReissues = map[string]*PendingReissue{}
+		}
+		cp := p
+		st.PendingReissues[requestID] = &cp
 		return nil
 	})
 }

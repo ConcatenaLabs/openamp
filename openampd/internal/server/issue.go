@@ -101,6 +101,16 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 501, "hosted issuance requires -demoissuer; production issuance tooling keeps issuer keys offline")
 		return
 	}
+	// The reissuance token goes straight into a supply cap: check that one can
+	// be made before anything else happens.
+	capCold, ok := s.capReady(w, req.CapColdKey)
+	if !ok {
+		return
+	}
+	var capAtoms uint64
+	if req.SupplyCap != nil {
+		capAtoms = *req.SupplyCap
+	}
 
 	var holder, issuer *store.User
 	s.st.View(func(st *store.State) {
@@ -193,16 +203,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token output destination: the server wallet (kept for reissuance; must
-	// be re-blinded before any reissue, see the node repo's issuance notes).
-	tokenAddr, err := s.wallet.GetNewAddress()
+	// Token output destination: the asset's supply cap with nothing minted, so
+	// the token never sits in the server wallet and every later mint is counted
+	// against the cap (supplycap.go).
+	supplyCap, capSpk, err := s.newSupplyCap(assetDisplay, displayHash(tokenID), displayHash(entropy), capCold, capAtoms)
 	if err != nil {
-		httpErr(w, 502, "%v", err)
-		return
-	}
-	tokenInfo, err := s.wallet.GetAddressInfo(tokenAddr)
-	if err != nil {
-		httpErr(w, 502, "%v", err)
+		httpErr(w, 502, "supply cap: %v", err)
 		return
 	}
 	changeAddr, err := s.wallet.GetNewAddress()
@@ -217,19 +223,18 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
-	// Output nonces + destinations. For a transparent mint (the default) the
-	// token and fee-change outputs go to ordinary wallet addresses with null
-	// nonces, byte-identically to before OA-8. For a confidential MINT REQUEST
-	// (a property of this transaction only, never of the asset) the enclave
-	// output blinds to the holder's key and the token/fee-change outputs go to
-	// per-call blinded (blech32) wallet addresses, which forces blinding for
-	// THIS transaction even on a wallet running -blindedaddresses=0 (node000's
-	// flag is never touched) and gives the >=2 confidential outputs a blinded
-	// transaction needs.
+	// Output nonces + destinations. For a transparent mint (the default) every
+	// output is explicit with a null nonce. For a confidential MINT REQUEST (a
+	// property of this transaction only, never of the asset) the enclave output
+	// blinds to the holder's key and the fee change goes to a per-call blinded
+	// (blech32) wallet address, which forces blinding for THIS transaction even
+	// on a wallet running -blindedaddresses=0 and gives the two confidential
+	// outputs a blinded transaction needs. The token output is explicit either
+	// way: the supply cap reads only explicit coins.
 	holderNonce := elements.NullNonce()
 	tokenNonce := elements.NullNonce()
 	changeNonce := elements.NullNonce()
-	tokenSpk := mustHexBytes(tokenInfo.ScriptPubKey)
+	tokenSpk := capSpk
 	changeSpk := mustHexBytes(changeInfo.ScriptPubKey)
 	if req.Confidential {
 		holderX := elements.MustHex32(holder.Pubkeys[0])
@@ -240,19 +245,13 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		holderNonce = hn
 		// OA-8: opt-in confidential per call, no node flag. Request a fresh
-		// blech32 address for each of the token and fee-change outputs; the
-		// wallet returns a blinding key for it even under -blindedaddresses=0.
-		tn, tspk, err := s.blindedWalletOutput()
-		if err != nil {
-			httpErr(w, 500, "confidential token output: %v", err)
-			return
-		}
+		// blech32 address for the fee-change output; the wallet returns a
+		// blinding key for it even under -blindedaddresses=0.
 		cn, cspk, err := s.blindedWalletOutput()
 		if err != nil {
 			httpErr(w, 500, "confidential fee-change output: %v", err)
 			return
 		}
-		tokenNonce, tokenSpk = tn, tspk
 		changeNonce, changeSpk = cn, cspk
 	}
 	tx := &elements.Tx{Version: 2}
@@ -322,6 +321,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	asset.IssueTxid = txid
+	supplyCap.CoinTxid, supplyCap.CoinVout = txid, 1
+	supplyCap.TokenAtoms, supplyCap.IssuedTokenAtoms = 1_0000_0000, 1_0000_0000
+	asset.SupplyCap = supplyCap
 
 	// Only a server-generated issuer key is stored. For an external issuer key the
 	// server holds nothing (the entity signs clawbacks in its browser), so there is
@@ -342,10 +344,12 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	s.st.AppendLog("issue", map[string]any{
 		"asset": assetDisplay, "txid": txid, "atoms": req.Atoms,
 		"holder": req.HolderAID, "contract_hash": asset.ContractHash,
+		"supply_cap": supplyCap.Cap, "supply_cap_address": supplyCap.Address, "cap_cold_key": supplyCap.ColdKey,
 	})
 	resp := map[string]any{
 		"asset": assetDisplay, "token": displayHash(tokenID), "entropy": displayHash(entropy),
 		"txid": txid, "contract": json.RawMessage(canonical), "contract_hash": asset.ContractHash,
+		"supply_cap": supplyCapView(supplyCap),
 	}
 	// Only surface issuer_external when true, so a legacy (server-generated key)
 	// issuance response stays byte-identical to pre-M9.
@@ -399,6 +403,14 @@ type issueRequest struct {
 	// Only meaningful with enforcement "damp"; accepted now so the request
 	// shape is pinned ahead of the capability.
 	VerifierAmount uint64 `json:"verifier_amount,omitempty"`
+
+	// SupplyCap is the most ever minted through the asset's supply cap after
+	// this issuance, in atoms; absent or 0, the supply is final at issuance.
+	// It is fixed for good: the covenant has no path that raises it.
+	SupplyCap *uint64 `json:"supply_cap,omitempty"`
+	// CapColdKey is the x-only key that can move the supply cap to a new
+	// operator key (a lost or stolen one). Absent: the server's -capcoldkey.
+	CapColdKey string `json:"cap_cold_key,omitempty"`
 
 	// OA-1: optional issuer/operator identity for asset-registry publication.
 	EntityDomain         string `json:"entity_domain,omitempty"`
@@ -900,7 +912,9 @@ func (s *Server) handleHolders(w http.ResponseWriter, r *http.Request) {
 // never a stored counter, so a burn (OA-5) that spends enclave units into an
 // unspendable output lowers it and a reissuance (OA-6) that lands new units in
 // an enclave raises it, both as soon as the change confirms. The reissuance
-// token (held in the server wallet, not an enclave) is deliberately excluded.
+// token is not a unit of the asset and is not counted; the asset's supply cap
+// is shown beside the figure: the cap fixed when it was made, what has been
+// minted through it, the room left, and the coin that holds the token.
 func (s *Server) handleSupply(w http.ResponseWriter, r *http.Request) {
 	assetID := r.URL.Query().Get("asset")
 	var asset *store.Asset
@@ -925,7 +939,11 @@ func (s *Server) handleSupply(w http.ResponseWriter, r *http.Request) {
 	}
 	var height int64
 	s.st.View(func(st *store.State) { height = st.Height })
-	httpJSON(w, map[string]any{"asset": asset.ID, "circulating_atoms": total, "height": height})
+	resp := map[string]any{"asset": asset.ID, "circulating_atoms": total, "height": height}
+	if asset.SupplyCap != nil {
+		resp["supply_cap"] = supplyCapView(asset.SupplyCap)
+	}
+	httpJSON(w, resp)
 }
 
 // handleAnchor commits the transparency-log head on-chain in an OP_RETURN.

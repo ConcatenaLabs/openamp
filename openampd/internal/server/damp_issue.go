@@ -153,6 +153,13 @@ type dampIssueRequest struct {
 	BurnAllowed bool   `json:"burn_allowed"`
 	IssuerAID   string `json:"issuer_aid,omitempty"`
 
+	// SupplyCap and CapColdKey configure the supply cap A's reissuance token
+	// goes into at completion, exactly as for a cosign issuance: the most ever
+	// minted through it (absent or 0: none) and the cold key (absent: the
+	// server's -capcoldkey).
+	SupplyCap  *uint64 `json:"supply_cap,omitempty"`
+	CapColdKey string  `json:"cap_cold_key,omitempty"`
+
 	// OA-1 identity, byte-for-byte the same block a cosign issuance builds.
 	TermsHash            string `json:"terms_hash,omitempty"`
 	Endpoint             string `json:"endpoint,omitempty"`
@@ -446,6 +453,17 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		network = "testnet"
 	}
 
+	// A's reissuance token goes into a supply cap at completion; check now,
+	// before anything is minted, that one can be made.
+	capCold, ok := s.capReady(w, req.CapColdKey)
+	if !ok {
+		return
+	}
+	var capAtoms uint64
+	if req.SupplyCap != nil {
+		capAtoms = *req.SupplyCap
+	}
+
 	// Policy key. Generated but never used to authorize a transfer of this asset;
 	// see dampContract for why it is still committed.
 	policyX, policyRef, err := s.signer.GeneratePolicyKey()
@@ -611,6 +629,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		VerifierAsset: vAssetDisplay, VerifierAmount: q, VerifierToken: displayHash(vTokenID), VerifierVout: 0,
 		VerifierIssueTxid: vTxid,
 		IssuerUpdateKey:   req.IssuerUpdateKey, IssuerAID: req.IssuerAID, BurnAllowed: req.BurnAllowed,
+		SupplyCap: capAtoms, CapColdKey: capCold,
 		PolicyPub: hex.EncodeToString(policyX[:]), PolicyRef: policyRef,
 		Contract: contract, ContractHash: displayHash(digest),
 		AssetID: assetDisplay, Entropy: displayHash(entropy), Token: displayHash(tokenID),
@@ -800,6 +819,26 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// A's reissuance token goes into its supply cap in this same transaction,
+	// never into the server wallet.
+	if s.tool == nil {
+		httpErr(w, 501, supplyCapNotConfigured)
+		return
+	}
+	capCold := p.CapColdKey
+	if capCold == "" {
+		capCold = strings.ToLower(s.cfg.CapColdKey)
+	}
+	if capCold == "" || capCold == s.capOperatorKey {
+		httpErr(w, 409, "the prepared issuance names no usable supply-cap cold key; POST /v1/issuer/damp-assets again with cap_cold_key")
+		return
+	}
+	supplyCap, capSpk, err := s.newSupplyCap(p.AssetID, p.Token, p.Entropy, capCold, p.SupplyCap)
+	if err != nil {
+		httpErr(w, 502, "supply cap: %v", err)
+		return
+	}
+
 	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
 	assetID := internalHash(p.AssetID)
 	tokenID := internalHash(p.Token)
@@ -839,7 +878,7 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(assetID), Value: elements.ExplicitValue(p.Atoms),
 			Nonce: elements.NullNonce(), ScriptPubKey: userCov.ScriptPubKey()},
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(tokenID), Value: elements.ExplicitValue(1_0000_0000),
-			Nonce: elements.NullNonce(), ScriptPubKey: changeSpk},
+			Nonce: elements.NullNonce(), ScriptPubKey: capSpk},
 		&elements.TxOut{Asset: elements.ExplicitAsset(vAssetID), Value: elements.ExplicitValue(p.VerifierAmount),
 			Nonce: elements.NullNonce(), ScriptPubKey: verifierCov.ScriptPubKey()},
 		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(p.FundingSats - s.cfg.FeeSats),
@@ -875,6 +914,8 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	supplyCap.CoinTxid, supplyCap.CoinVout = txid, 1
+	supplyCap.TokenAtoms, supplyCap.IssuedTokenAtoms = 1_0000_0000, 1_0000_0000
 	userAddr := s.addressOfSPK(userCov.ScriptPubKey())
 	verifierAddr := s.addressOfSPK(verifierCov.ScriptPubKey())
 	asset := &store.Asset{
@@ -888,6 +929,7 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		IssuerAID: p.IssuerAID, Clawback: false, BurnAllowed: p.BurnAllowed,
 		Entropy: p.Entropy, Token: p.Token,
 		IssueTxid:   txid,
+		SupplyCap:   supplyCap,
 		Enforcement: "damp",
 		Damp: &store.DampBinding{
 			VerifierAsset: p.VerifierAsset, VerifierAmount: p.VerifierAmount,

@@ -40,7 +40,23 @@ OPENAMPD_DAMP_REGISTRY=/root/sequentia/opendamp/vectors/addresses.json
                                                 # answer 501 on every damp endpoint
 OPENAMPD_ELECTRS_URL=http://127.0.0.1:3003      # explorer base URL (default shown);
                                                 # prevout fallback without -txindex
+OPENAMPD_TOKEN_TOOL=/root/.local/bin/token-covenants
+                                                # the supply-cap tool; unset, issuance
+                                                # and minting are refused
+OPENAMPD_CAP_COLD_KEY=<x-only hex>              # default cold key of new supply caps,
+                                                # made on the owner's machine, never here
 ```
+
+The supply-cap tool is installed from a sequentia-contracts commit with no
+checkout (`cargo install --locked --root /root/.local --git
+https://github.com/ConcatenaLabs/sequentia-contracts --rev <commit>
+token-covenants`). openampd makes its own supply-cap operator key on first
+start, in `<datadir>/cap-operator.key` (0600); back it up with the data
+directory. The cold key's words never reach the box: the cold key replaces a
+lost or stolen operator key, with `token-covenants supply-cap build` (path
+`rekey`) on the owner's machine, after which `POST /v1/issuer/supply-cap/rekey`
+records the move. Assets issued before openampd held its tokens in supply caps
+have their tokens moved in with `POST /v1/issuer/supply-cap`.
 
 The fee asset must be one the testnet producers accept (on their
 `setfeeexchangerates` whitelist). tSEQ (the policy asset) always works.
@@ -107,12 +123,13 @@ top-level [README](../README.md).
 
 ## Per-transfer confidentiality
 
-There are no confidential assets. Any transfer, burn, mint or reissue may pass
+There are no confidential assets. Any transfer, burn or issuance may pass
 `confidential: true`; it blinds that transaction only and marks nothing about
-the asset. openampd derives the enclave blinding keys itself and keeps them in
-an `openampd-watch` node wallet, so the enclave side needs no node flag. The
-funding wallet must be able to produce blinded change for its own fee-change
-and token outputs, which every Sequentia wallet can do per call
+the asset. A later mint cannot be blinded: the supply cap counts it from the
+explicit issuance on its own input. openampd derives the enclave blinding keys
+itself and keeps them in an `openampd-watch` node wallet, so the enclave side
+needs no node flag. The funding wallet must be able to produce blinded change
+for its own fee-change outputs, which every Sequentia wallet can do per call
 (`-blindedaddresses=1` is not required). The end-to-end flow is proven in
 `feature_openamp_confidential.py` (node repo).
 
