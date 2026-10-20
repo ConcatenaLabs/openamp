@@ -340,8 +340,8 @@ func TestDamp_FullIssuance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode issuance: %v", err)
 	}
-	if len(tx.Out) != 5 {
-		t.Fatalf("want 5 outputs (A, token, V lock, fee change, fee), got %d", len(tx.Out))
+	if len(tx.Out) != 6 {
+		t.Fatalf("want 6 outputs (A, A's token, V lock, V's token, fee change, fee), got %d", len(tx.Out))
 	}
 	wantUserSpk := v.UserCovenants[0].ScriptPubKey
 	if got := hex.EncodeToString(tx.Out[0].ScriptPubKey); got != wantUserSpk {
@@ -385,9 +385,31 @@ func TestDamp_FullIssuance(t *testing.T) {
 	if got := hex.EncodeToString(tx.Out[1].ScriptPubKey); got != capRec.ScriptPubKey || len(tx.Out[1].Nonce) != 1 {
 		t.Fatalf("A's token output pays %s, not its supply cap %s", got, capRec.ScriptPubKey)
 	}
-	// Input 1 spends the verifier issuance's V output.
-	if len(tx.In) != 2 {
-		t.Fatalf("want 2 inputs (funding+issuance, V), got %d", len(tx.In))
+	// Input 1 spends the verifier issuance's V output, input 2 its V token.
+	if len(tx.In) != 3 {
+		t.Fatalf("want 3 inputs (funding+issuance, V, V's token), got %d", len(tx.In))
+	}
+	if tx.In[2].Prevout.N != 1 || tx.In[2].Prevout.Hash != tx.In[1].Prevout.Hash {
+		t.Fatalf("input 2 is not the V issuance's token output: %+v", tx.In[2].Prevout)
+	}
+	// V's reissuance token pays its covenant, recording C_V(pi_0), explicitly.
+	var vt *store.VerifierToken
+	st.View(func(state *store.State) {
+		if a := state.Assets[assetID]; a != nil && a.Damp != nil {
+			vt = a.Damp.VerifierToken
+		}
+	})
+	if vt == nil || vt.CoinVout != 3 || vt.Recorded != wantVSpk || vt.TokenAtoms != 1_0000_0000 {
+		t.Fatalf("V's token covenant not recorded at vout 3 recording C_V(pi_0): %+v", vt)
+	}
+	if got := hex.EncodeToString(tx.Out[3].ScriptPubKey); got != vt.ScriptPubKey || len(tx.Out[3].Nonce) != 1 {
+		t.Fatalf("V's token output pays %s, not its covenant %s", got, vt.ScriptPubKey)
+	}
+	if got, ok := elements.ExplicitValueAmount(tx.Out[3].Value); !ok || got != 1_0000_0000 {
+		t.Fatalf("V's token output carries %d (explicit=%v), want the whole token", got, ok)
+	}
+	if out["verifier_token"] == nil {
+		t.Fatal("the completion does not say where V's token went")
 	}
 
 	// Persistence: enforcement and the full binding.

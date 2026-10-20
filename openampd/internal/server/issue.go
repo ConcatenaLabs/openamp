@@ -943,6 +943,9 @@ func (s *Server) handleSupply(w http.ResponseWriter, r *http.Request) {
 	if asset.SupplyCap != nil {
 		resp["supply_cap"] = supplyCapView(asset.SupplyCap)
 	}
+	if asset.Damp != nil && asset.Damp.VerifierToken != nil {
+		resp["verifier_token"] = verifierTokenView(asset.Damp.VerifierToken)
+	}
 	httpJSON(w, resp)
 }
 

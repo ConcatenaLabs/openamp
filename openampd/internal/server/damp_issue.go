@@ -495,7 +495,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	vDigest := sha256.Sum256(vContract)
-	_, vAssetID, vTokenID := fastmerkle.DeriveIssuanceIDs(internalHash(funding.txid), funding.vout, vDigest)
+	vEntropy, vAssetID, vTokenID := fastmerkle.DeriveIssuanceIDs(internalHash(funding.txid), funding.vout, vDigest)
 	vAssetDisplay := displayHash(vAssetID)
 
 	walletAddr, err := s.wallet.GetNewAddress()
@@ -525,7 +525,8 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		},
 	})
 	// Output order is load-bearing: phase 2 spends vout 0 (the q units of V) into
-	// C_V and vout 2 (the fee change) as A's issuance input, both by outpoint.
+	// C_V, vout 1 (V's reissuance token) into its covenant and vout 2 (the fee
+	// change) as A's issuance input, all by outpoint.
 	vTx.Out = append(vTx.Out,
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(vAssetID), Value: elements.ExplicitValue(q),
 			Nonce: elements.NullNonce(), ScriptPubKey: walletSpk},
@@ -627,6 +628,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		ID: newID(), Name: req.Name, Ticker: req.Ticker, Precision: req.Precision, Atoms: req.Atoms,
 		HolderPubkey: req.HolderPubkey, Whitelist: req.Whitelist, WhitelistRoot: hex.EncodeToString(wlRoot[:]),
 		VerifierAsset: vAssetDisplay, VerifierAmount: q, VerifierToken: displayHash(vTokenID), VerifierVout: 0,
+		VerifierEntropy:   displayHash(vEntropy),
 		VerifierIssueTxid: vTxid,
 		IssuerUpdateKey:   req.IssuerUpdateKey, IssuerAID: req.IssuerAID, BurnAllowed: req.BurnAllowed,
 		SupplyCap: capAtoms, CapColdKey: capCold,
@@ -839,6 +841,30 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// V's reissuance token goes into its covenant in this same transaction too,
+	// recording C_V(pi_0): it resumes the asset after a halt, and from a wallet
+	// it could mint V to any address. Phase 1 left it at vout 1.
+	const vTokenVout = uint32(1)
+	if !s.utxoUnspent(p.VerifierIssueTxid, vTokenVout) {
+		httpErr(w, 409, "V's reissuance token %s:%d is gone from the wallet, so it can no longer move into its covenant; POST /v1/issuer/damp-assets again", p.VerifierIssueTxid, vTokenVout)
+		return
+	}
+	vEntropy := p.VerifierEntropy
+	if vEntropy == "" {
+		e, a, _, _, err := s.verifierIssuance(p.VerifierIssueTxid)
+		if err != nil || a != p.VerifierAsset {
+			httpErr(w, 502, "read V's issuance entropy from %s: %v", p.VerifierIssueTxid, err)
+			return
+		}
+		vEntropy = e
+	}
+	vToken, vTokenSpk, err := s.newVerifierToken(p.VerifierAsset, p.VerifierToken, vEntropy, p.VerifierAmount,
+		p.IssuerUpdateKey, verifierSpkHex)
+	if err != nil {
+		httpErr(w, 502, "verifier token: %v", err)
+		return
+	}
+
 	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
 	assetID := internalHash(p.AssetID)
 	tokenID := internalHash(p.Token)
@@ -861,7 +887,8 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 
 	tx := &elements.Tx{Version: 2}
 	// Input 0 carries the issuance of A and pays the fee; input 1 is the q units
-	// of V phase 1 minted, which this transaction moves into C_V(pi_0).
+	// of V phase 1 minted, which this transaction moves into C_V(pi_0); input 2
+	// is V's reissuance token, which moves into its covenant.
 	tx.In = append(tx.In,
 		&elements.TxIn{
 			Prevout: elements.OutPoint{Hash: internalHash(p.FundingTxid), N: p.FundingVout},
@@ -873,6 +900,7 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 			},
 		},
 		&elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(p.VerifierIssueTxid), N: p.VerifierVout}},
+		&elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(p.VerifierIssueTxid), N: vTokenVout}},
 	)
 	tx.Out = append(tx.Out,
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(assetID), Value: elements.ExplicitValue(p.Atoms),
@@ -881,6 +909,8 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 			Nonce: elements.NullNonce(), ScriptPubKey: capSpk},
 		&elements.TxOut{Asset: elements.ExplicitAsset(vAssetID), Value: elements.ExplicitValue(p.VerifierAmount),
 			Nonce: elements.NullNonce(), ScriptPubKey: verifierCov.ScriptPubKey()},
+		&elements.TxOut{Asset: elements.ExplicitAsset(elements.MustHex32(p.VerifierToken)), Value: elements.ExplicitValue(1_0000_0000),
+			Nonce: elements.NullNonce(), ScriptPubKey: vTokenSpk},
 		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(p.FundingSats - s.cfg.FeeSats),
 			Nonce: elements.NullNonce(), ScriptPubKey: changeSpk},
 		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
@@ -916,6 +946,8 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 
 	supplyCap.CoinTxid, supplyCap.CoinVout = txid, 1
 	supplyCap.TokenAtoms, supplyCap.IssuedTokenAtoms = 1_0000_0000, 1_0000_0000
+	vToken.CoinTxid, vToken.CoinVout = txid, 3
+	vToken.TokenAtoms, vToken.IssuedTokenAtoms = 1_0000_0000, 1_0000_0000
 	userAddr := s.addressOfSPK(userCov.ScriptPubKey())
 	verifierAddr := s.addressOfSPK(verifierCov.ScriptPubKey())
 	asset := &store.Asset{
@@ -940,14 +972,15 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 			// register with this server), so the ownership report and the supply figure
 			// derive their scan set from here. Later seqs keep it current through the
 			// policy-update path.
-			Whitelist: damp.KeyEntries(p.Whitelist),
-			Tree:      damp.TreeDMTv1,
-			UserCMR: req.UserCMR,
-			VerifierCMR:  cmrHexList(verifierCMRs)[0],
-			VerifierCMRs: cmrHexList(verifierCMRs),
-			IssuerCMR:    hex.EncodeToString(issuerCMR[:]),
+			Whitelist:       damp.KeyEntries(p.Whitelist),
+			Tree:            damp.TreeDMTv1,
+			UserCMR:         req.UserCMR,
+			VerifierCMR:     cmrHexList(verifierCMRs)[0],
+			VerifierCMRs:    cmrHexList(verifierCMRs),
+			IssuerCMR:       hex.EncodeToString(issuerCMR[:]),
 			UserCovenantSPK: hex.EncodeToString(userCov.ScriptPubKey()), UserCovenantAddr: userAddr,
 			VerifierSPK: verifierSpkHex, VerifierAddr: verifierAddr,
+			VerifierToken: vToken,
 		},
 	}
 	if err := s.st.Update(func(st *store.State) error {
@@ -1006,6 +1039,7 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		"user_covenant_spk":         asset.Damp.UserCovenantSPK,
 		"verifier_covenant_address": verifierAddr,
 		"verifier_covenant_spk":     verifierSpkHex,
+		"verifier_token":            verifierTokenView(vToken),
 		"contract":                  json.RawMessage(p.Contract),
 		"contract_hash":             p.ContractHash,
 		"snapshot_seq":              0,
