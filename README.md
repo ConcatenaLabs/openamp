@@ -47,7 +47,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid) |
 | `GET /v1/assets` | All assets with their contracts |
 | `GET /v1/assets/{id}` | One asset |
-| `GET /v1/supply?asset=<id>` | Chain-derived circulating supply and the asset's supply cap: `{"asset", "circulating_atoms", "height", "supply_cap"}` |
+| `GET /v1/supply?asset=<id>` | Chain-derived circulating supply, the asset's supply cap and, for a network-enforced asset, its verifier-asset token's covenant: `{"asset", "circulating_atoms", "height", "supply_cap", "verifier_token"}` |
 | `GET /v1/snapshots?asset=<id>[&seq=<n>]` | Published policy snapshots (network-enforced assets; latest, or one by `seq`) |
 | `GET /v1/log` | The transparency log (JSON lines) |
 
@@ -124,6 +124,7 @@ Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <lea
 | `POST /v1/issuer/reissue` | Mint more of an existing asset into a target enclave, through its supply cap (idempotent by `request_id`) |
 | `POST /v1/issuer/supply-cap` | Move an issued asset's reissuance token from the server wallet into a supply cap |
 | `POST /v1/issuer/supply-cap/rekey` | Record a rekey of an asset's supply cap made with its cold key |
+| `POST /v1/issuer/verifier-token` | Move a network-enforced asset's verifier-asset token from the server wallet into its covenant |
 | `POST /v1/issuer/snapshots` | Publish a signed policy snapshot (network-enforced assets) |
 | `POST /v1/issuer/pledges` | Lock a holder's units in place as loan collateral |
 | `GET /v1/issuer/pledges` | List pledges |
@@ -196,7 +197,7 @@ Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing
    opendamp derive --snapshot derive_snapshot.json
    ```
 
-3. **`POST /v1/issuer/damp-assets/{prepare_id}/complete`** mints the asset straight into `C_U(holder)` and locks q of V into `C_V(pi_0)` in **one** transaction, so the asset never exists without its verifier output and therefore never moves unpoliced.
+3. **`POST /v1/issuer/damp-assets/{prepare_id}/complete`** mints the asset straight into `C_U(holder)` and locks q of V into `C_V(pi_0)` in **one** transaction, so the asset never exists without its verifier output and therefore never moves unpoliced. The same transaction moves the asset's reissuance token into its supply cap and V's reissuance token into its own covenant (below), so this server's wallet holds neither.
 
    ```json
    {"user_cmr": "<u_cmr>", "verifier_cmr": "<p_cmr>", "issuer_cmr": "<g_cmr, optional>",
@@ -204,7 +205,9 @@ Configure it with `-dampregistry <path>` (or `OPENAMPD_DAMP_REGISTRY`), pointing
     "snapshot_sig": "<optional BIP340 over snapshot_sig_message>"}
    ```
 
-   `pi` is **required and checked**: this server recomputes it from the whitelist and asset id it stored and refuses (409, nothing broadcast) unless they agree. That is the authority split — this server stays authoritative about policy while the Rust toolchain stays authoritative about program compilation. A supplied `verifier_spk` is compared against the address derived from `verifier_cmr`, which catches a CMR pasted from the wrong policy before any coin moves. Response: `{"asset", "verifier_asset", "txids": {"verifier_issue", "asset_issue", "verifier_lock"}, "pi", "whitelist_root", "user_covenant_address", "user_covenant_spk", "verifier_covenant_address", "verifier_covenant_spk", "contract", "contract_hash", "snapshot_seq", "snapshot_signed"}` — `asset_issue` and `verifier_lock` are the same transaction by construction.
+   `pi` is **required and checked**: this server recomputes it from the whitelist and asset id it stored and refuses (409, nothing broadcast) unless they agree. That is the authority split — this server stays authoritative about policy while the Rust toolchain stays authoritative about program compilation. A supplied `verifier_spk` is compared against the address derived from `verifier_cmr`, which catches a CMR pasted from the wrong policy before any coin moves. Response: `{"asset", "verifier_asset", "txids": {"verifier_issue", "asset_issue", "verifier_lock"}, "pi", "whitelist_root", "user_covenant_address", "user_covenant_spk", "verifier_covenant_address", "verifier_covenant_spk", "contract", "contract_hash", "snapshot_seq", "snapshot_signed", "verifier_token"}` — `asset_issue` and `verifier_lock` are the same transaction by construction.
+
+**The verifier asset's token.** A halt burns V, and V's reissuance token is what resumes the asset; from a wallet it could mint V to any address, which would let every holder spend with no policy at all. So completion pays it, in the issuance transaction, into sequentia-contracts' verifier-token covenant (`templates/verifier_token`, `docs/verifier-token.md`) recording `C_V(pi_0)`. Signed by the issuer update key, which this server never holds, the covenant reissues exactly q of V only into the verifier covenant it last recorded, and records only the script of a coin holding exactly q of V. A halt records the verifier it burns, so a resume restores the halted policy; opendamp's README has the halt-and-resume runbook, with `token-covenants verifier-token` for the covenant's side. `GET /v1/assets/<id>` carries the covenant under `damp.verifier_token` (its instance file, the verifier it records, its coin) and `GET /v1/supply` shows it beside the supply cap. **`POST /v1/issuer/verifier-token`**, body `{"asset"}`, moves V's token from this server's wallet into its covenant, recording the asset's current verifier, for an asset issued before completion did so; it derives V's issuance entropy and token from the recorded V issuance, and answers with the covenant's place when the token has moved already.
 
 The contract's `openamp` block gains `"enforcement": "damp"`, `verifier_asset`, `verifier_amount` and `issuer_update_key`, all committed into the asset id, and `clawback` is always `false` (there is no clawback leaf; the issuer's powers are a policy update and a halt through the covenant's issuer path). It carries **no** `genesis_policy` and no `genesis_snapshot_hash`: `pi_0` commits to the asset id, which commits to the contract, so a contract carrying `pi_0` would have to contain a hash of itself. `policy_pubkey` is still issued even though nothing reads it, so the asset stays registerable and the asset-id shape stays uniform across both tiers.
 
@@ -399,6 +402,8 @@ openampd/internal/store/    JSON state store, 0600 key file, transparency log
 openampd/docs/              design notes (blinding-key rotation, the M2
                             snapshot service)
 e2e/supply_cap.py           the supply cap through a real openampd and node
+e2e/verifier_token.py       a network-enforced asset's verifier-asset token
+                            through a real openampd and node
 openampd/testdata/          the opendamp repository's CMR pinning file, pinned
                             for the tests that check the Go mirrors against it
 spec/                       frozen formats (contract v1) and the venue/wallet
@@ -424,6 +429,7 @@ go test ./openampd/internal/elements
 - [`test/functional/feature_openamp_m0.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_m0.py) (node repo): the M0 proof; demonstrates on regtest that enclave issuance, policy-co-signed transfer, clawback, and the contract-to-asset-ID binding all work against unmodified consensus.
 - [`test/functional/feature_openamp_daemon.py`](https://github.com/ConcatenaLabs/Sequentia/blob/master/test/functional/feature_openamp_daemon.py) (node repo): end-to-end integration of a real `openampd` process with a regtest node, covering the hosted-transfer, rules, freeze, and clawback flows.
 - [`e2e/supply_cap.py`](e2e/supply_cap.py): a real `openampd` and a regtest node with Simplicity active from genesis: an asset issued with a supply cap and its token in the covenant from the issuance on, mints through the reissue endpoint up to the cap exactly, a mint one atom over refused in a block forced with `generateblock` beside a control the node accepts, and a mint the server wallet tries alone refused. It needs a node checkout, the `token-covenants` tool, and `seqc` with a sequentia-contracts checkout (its docstring has the command).
+- [`e2e/verifier_token.py`](e2e/verifier_token.py): a real `openampd`, a regtest node with Simplicity active from genesis, and the `opendamp` and `token-covenants` tools: a network-enforced asset issued in its two phases with V's token in its covenant recording `C_V(pi_0)` and the asset's token in its supply cap from the issuance on, the wallet holding neither; a halt that burns V and records the verifier, a resume through the covenant, and a transfer that settles again. It needs a node checkout, both tools and opendamp's CMR pinning file (its docstring has the command).
 - `openampd/internal/elements/testdata/vectors.json`: golden vectors proving the Go Elements primitives byte-exact against the node's test framework.
 
 ## Ecosystem

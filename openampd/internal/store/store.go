@@ -179,18 +179,44 @@ type DampBinding struct {
 	// Each entry carries the height bounds that bind that holder, and serializes as
 	// a bare key when it has none, so a record written before bounds existed stays
 	// byte-identical to what it was.
-	Whitelist        []damp.PredicateEntry `json:"whitelist,omitempty"`
-	Tree             string                `json:"tree"` // "dmt-v1"
-	UserCMR          string                `json:"user_cmr"`
+	Whitelist []damp.PredicateEntry `json:"whitelist,omitempty"`
+	Tree      string                `json:"tree"` // "dmt-v1"
+	UserCMR   string                `json:"user_cmr"`
 	// VerifierCMR is the CANONICAL shape's program. VerifierCMRs is the whole
 	// menu, in taptree order, which is what the address is derived from.
-	VerifierCMR      string                `json:"verifier_cmr"`
-	VerifierCMRs     []string              `json:"verifier_cmrs,omitempty"`
-	IssuerCMR        string                `json:"issuer_cmr"`
-	UserCovenantSPK  string                `json:"user_covenant_spk"`     // C_U(initial holder), hex
-	UserCovenantAddr string                `json:"user_covenant_address"` // best-effort, node-decoded
-	VerifierSPK      string                `json:"verifier_covenant_spk"`
-	VerifierAddr     string                `json:"verifier_covenant_address"`
+	VerifierCMR      string   `json:"verifier_cmr"`
+	VerifierCMRs     []string `json:"verifier_cmrs,omitempty"`
+	IssuerCMR        string   `json:"issuer_cmr"`
+	UserCovenantSPK  string   `json:"user_covenant_spk"`     // C_U(initial holder), hex
+	UserCovenantAddr string   `json:"user_covenant_address"` // best-effort, node-decoded
+	VerifierSPK      string   `json:"verifier_covenant_spk"`
+	VerifierAddr     string   `json:"verifier_covenant_address"`
+	// VerifierToken is V's reissuance token in its covenant. Absent on records
+	// whose token has not been moved in (POST /v1/issuer/verifier-token).
+	VerifierToken *VerifierToken `json:"verifier_token,omitempty"`
+}
+
+// VerifierToken is the reissuance token of a network-enforced asset's verifier
+// asset V, held by sequentia-contracts' verifier-token covenant
+// (templates/verifier_token, docs/verifier-token.md): signed by the issuer
+// update key, it reissues exactly q of V only into the verifier covenant it
+// records, and records only the script of a coin holding exactly q of V. A
+// halt records the verifier it burns, so a resume restores that policy.
+type VerifierToken struct {
+	// Instance is the tool's instance file (template hash, parameters and the
+	// chain's genesis).
+	Instance json.RawMessage `json:"instance"`
+	Token    string          `json:"token"`   // display hex of V's reissuance token
+	Entropy  string          `json:"entropy"` // display hex of V's issuance entropy
+	// Recorded is the scriptPubKey of the verifier covenant the coin records,
+	// hex: where a resume mints q of V.
+	Recorded         string `json:"recorded"`
+	CoinTxid         string `json:"coin_txid"`
+	CoinVout         uint32 `json:"coin_vout"`
+	ScriptPubKey     string `json:"script_pubkey"`
+	Address          string `json:"address"`
+	TokenAtoms       uint64 `json:"token_atoms"`
+	IssuedTokenAtoms uint64 `json:"issued_token_atoms,omitempty"`
 }
 
 // TransferRecord supports velocity accounting; entries above a reorged-out
@@ -383,7 +409,11 @@ type PendingDampIssuance struct {
 	VerifierAmount    uint64 `json:"verifier_amount"`
 	VerifierIssueTxid string `json:"verifier_issue_txid"`
 	VerifierToken     string `json:"verifier_token"`
-	VerifierVout      uint32 `json:"verifier_vout"`
+	// VerifierEntropy is V's issuance entropy, display hex: what V's token
+	// covenant is derived from at completion. Absent on prepares written before
+	// it was kept, which completion derives from the V issuance transaction.
+	VerifierEntropy string `json:"verifier_entropy,omitempty"`
+	VerifierVout    uint32 `json:"verifier_vout"`
 
 	IssuerUpdateKey string `json:"issuer_update_key"`
 	IssuerAID       string `json:"issuer_aid,omitempty"`
@@ -502,14 +532,14 @@ type PendingDampPolicy struct {
 	AddedOutpoints   []string `json:"added_outpoints,omitempty"`   // "txid:vout"
 	RemovedOutpoints []string `json:"removed_outpoints,omitempty"` // "txid:vout"
 
-	VerifierAsset   string `json:"verifier_asset"`
-	VerifierAmount  uint64 `json:"verifier_amount"`
-	VerifierTxid    string `json:"verifier_txid"`
-	VerifierVout    uint32 `json:"verifier_vout"`
-	VerifierSPKPrev string `json:"verifier_spk_prev"`
+	VerifierAsset    string   `json:"verifier_asset"`
+	VerifierAmount   uint64   `json:"verifier_amount"`
+	VerifierTxid     string   `json:"verifier_txid"`
+	VerifierVout     uint32   `json:"verifier_vout"`
+	VerifierSPKPrev  string   `json:"verifier_spk_prev"`
 	VerifierCMRPrev  string   `json:"verifier_cmr_prev"`
 	VerifierCMRsPrev []string `json:"verifier_cmrs_prev,omitempty"`
-	IssuerUpdateKey string `json:"issuer_update_key"`
+	IssuerUpdateKey  string   `json:"issuer_update_key"`
 
 	Snapshot       json.RawMessage `json:"snapshot"`         // canonical seq n+1 bytes
 	SnapshotHash   string          `json:"snapshot_hash"`    // SHA256 of those bytes
@@ -773,7 +803,7 @@ type PendingClawback struct {
 	// completion path closes that pledge once the sweep is broadcast, so an
 	// external issuer's two-phase seizure ends in the same state a legacy
 	// one-call seizure does. Empty for an ordinary clawback.
-	PledgeID string `json:"pledge_id,omitempty"`
+	PledgeID  string    `json:"pledge_id,omitempty"`
 	ID        string    `json:"id"`
 	TxHex     string    `json:"tx_hex"` // assembled L_claw sweep, enclave witnesses empty
 	AssetID   string    `json:"asset_id"`
@@ -838,9 +868,9 @@ func (s *Store) MarkClawback(id, txid string) error {
 		if st.Clawbacks == nil {
 			st.Clawbacks = map[string]string{}
 		}
-	if st.Pledges == nil {
-		st.Pledges = map[string]*Pledge{}
-	}
+		if st.Pledges == nil {
+			st.Pledges = map[string]*Pledge{}
+		}
 		st.Clawbacks[id] = txid
 		delete(st.PendingClawbacks, id)
 		return nil

@@ -56,7 +56,8 @@ directory. The cold key's words never reach the box: the cold key replaces a
 lost or stolen operator key, with `token-covenants supply-cap build` (path
 `rekey`) on the owner's machine, after which `POST /v1/issuer/supply-cap/rekey`
 records the move. Assets issued before openampd held its tokens in supply caps
-have their tokens moved in with `POST /v1/issuer/supply-cap`.
+have their tokens moved in with `POST /v1/issuer/supply-cap`, and a
+network-enforced asset's verifier-asset token with `POST /v1/issuer/verifier-token`.
 
 The fee asset must be one the testnet producers accept (on their
 `setfeeexchangerates` whitelist). tSEQ (the policy asset) always works.

@@ -34,6 +34,7 @@
 //	POST /v1/issuer/reissue             mint more into a target enclave, through the asset's supply cap
 //	POST /v1/issuer/supply-cap          move an issued asset's reissuance token into a supply cap
 //	POST /v1/issuer/supply-cap/rekey    record a rekey of an asset's supply cap by its cold key
+//	POST /v1/issuer/verifier-token      move a network-enforced asset's verifier-asset token into its covenant
 //	POST /v1/issuer/snapshots           publish a signed OpenDAMP policy snapshot
 //	GET  /v1/issuer/holders             ownership report
 //	POST /v1/issuer/anchor              anchor the transparency log on-chain
@@ -226,6 +227,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/issuer/reissue", s.issuerAuth(s.handleReissue))
 	mux.HandleFunc("POST /v1/issuer/supply-cap", s.issuerAuth(s.handleSupplyCapMove))
 	mux.HandleFunc("POST /v1/issuer/supply-cap/rekey", s.issuerAuth(s.handleSupplyCapRekey))
+	mux.HandleFunc("POST /v1/issuer/verifier-token", s.issuerAuth(s.handleVerifierTokenMove))
 	mux.HandleFunc("POST /v1/issuer/snapshots", s.issuerAuth(s.handleSnapshotPost))
 	mux.HandleFunc("GET /v1/issuer/holders", s.issuerAuth(s.handleHolders))
 	mux.HandleFunc("POST /v1/issuer/anchor", s.issuerAuth(s.handleAnchor))

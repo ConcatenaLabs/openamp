@@ -23,7 +23,8 @@ go build -o openampd/openampd ./openampd/cmd/openampd
 
 There is no CI. `go build ./... && go test ./...` before every PR is the whole gate, plus
 `e2e/supply_cap.py` (a real node and openampd; its docstring has the command) for a change to
-issuance, minting or the supply cap.
+issuance, minting or the supply cap, and `e2e/verifier_token.py` for a change to network-enforced
+issuance or the verifier asset's token.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -41,6 +42,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
 | `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
+| `e2e/verifier_token.py` | a network-enforced asset's verifier-asset token end to end: issued into its covenant, a halt that records, a resume, a transfer after it |
 | `openampd/testdata/opendamp-addresses.json` | a pinned copy of `vectors/addresses.json` from the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenants; the Go mirror tests check against it, so copy it again whenever opendamp's programs change |
 | `spec/` | frozen formats (contract v1), venue/wallet integration spec |
 | `tools/gen_vectors.py` | golden-vector generator |
@@ -78,6 +80,9 @@ from GitHub and builds there — never edit source on the server, never copy bin
   issuance transaction itself (`supplycap.go`), and every mint goes through the covenant via
   the `token-covenants` tool. Do not add a path that pays a token to the wallet or mints from
   one; a token in the wallet is unlimited mint authority for whoever holds that wallet's key.
+  A network-enforced asset's verifier-asset token goes into its own covenant
+  (`verifiertoken.go`) the same way: from the wallet it could mint the verifier asset anywhere,
+  which bypasses the policy of every holder.
 - **`-demoissuer` holds issuer keys server-side.** It is a testnet demo flag. A production issuer
   keeps that key offline.
 

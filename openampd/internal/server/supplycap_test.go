@@ -46,6 +46,13 @@ func fakeCapSpk(params map[string]string, minted uint64) string {
 	return "5120" + hex.EncodeToString(h[:])
 }
 
+// fakeVerifierTokenSpk is the fake's verifier-token script for an instance's
+// parameters and the verifier it records.
+func fakeVerifierTokenSpk(params map[string]string, verifier string) string {
+	h := sha256.Sum256([]byte("vt" + params["VERIFIER_ASSET"] + params["TOKEN"] + params["ISSUER_KEY"] + verifier))
+	return "5120" + hex.EncodeToString(h[:])
+}
+
 func readInstanceParams(path string) map[string]string {
 	b, _ := os.ReadFile(path)
 	var inst struct {
@@ -116,6 +123,23 @@ func (f *fakeCapTool) Run(args []string, stdin []byte) ([]byte, error) {
 			"txid": tx.TxID(), "hex": hex.EncodeToString(tx.Serialize()),
 			"next_minted": strconv.FormatUint(minted+amount, 10),
 			"successor":   map[string]any{"vout": 0, "script_pubkey": next, "address": map[string]string{"elementsregtest": "ert1pnext"}},
+		})
+	case "verifier-token instance":
+		amount, _ := strconv.ParseUint(flagOf(args, "amount"), 10, 64)
+		out := map[string]any{
+			"instance": 2, "template_hash": "bdcea3847f1b481084f7ef3c7bf8ac3a4d7820a88c2d38393e0bbb0f20b34650",
+			"params": map[string]string{"VERIFIER_ASSET": flagOf(args, "verifier-asset"), "TOKEN": flagOf(args, "token"),
+				"AMOUNT": fmt.Sprintf("%016x", amount), "ISSUER_KEY": flagOf(args, "issuer-key")},
+			"slots":                  map[string]string{"VERIFIER": "ff"},
+			"genesis":                flagOf(args, "genesis"),
+			"address":                map[string]string{"elementsregtest": "ert1pfakevt"},
+			"verifier_script_pubkey": flagOf(args, "verifier"),
+		}
+		return json.Marshal(out)
+	case "verifier-token address":
+		return json.Marshal(map[string]any{
+			"script_pubkey": fakeVerifierTokenSpk(readInstanceParams(flagOf(args, "instance")), flagOf(args, "verifier")),
+			"address":       map[string]string{"elementsregtest": "ert1pfakevt"},
 		})
 	case "supply-cap follow":
 		inst := map[string]any{"instance": 2, "params": map[string]string{"OPERATOR_KEY": req["new_operator_key"].(string),
