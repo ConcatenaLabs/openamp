@@ -57,23 +57,6 @@ FEE = 3000
 ISSUER_TOKEN = "e2e-issuer-token"
 
 
-def opendamp_snapshot(doc, genesis):
-    """The fields of a derive-ready snapshot document that `opendamp` reads.
-    Its reader refuses any other field, the published snapshot's `pi` and the
-    lists' `root` among them (it recomputes both), so they are left out."""
-    p = doc["predicates"]
-    snap = {k: doc[k] for k in ("v", "asset", "verifier_asset", "q", "tree", "issuer_update_key", "seq", "network",
-                                "prev_pi") if k in doc}
-    snap["genesis"] = genesis
-    snap["predicates"] = {"whitelist": {"entries": p["whitelist"]["entries"]}}
-    bl = (p.get("blacklist") or {}).get("entries") or []
-    if bl:
-        snap["predicates"]["blacklist"] = {"entries": bl}
-    if p.get("limit") is not None:
-        snap["predicates"]["limit"] = p["limit"]
-    return snap
-
-
 class VerifierTokenE2E(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
@@ -201,7 +184,9 @@ class VerifierTokenE2E(BitcoinTestFramework):
         }, token=ISSUER_TOKEN)
         self.generate(self.nodes[0], 1)
         asset, v_asset = prep["asset"], prep["verifier_asset"]
-        snap = opendamp_snapshot(prep["derive_snapshot"], genesis)
+        # derive_snapshot is what opendamp reads, as it is.
+        snap = prep["derive_snapshot"]
+        assert snap["genesis"] == genesis and snap["network"] == "regtest", snap
         snap_file = os.path.join(self.tmp, "snapshot-seq0.json")
         with open(snap_file, "w") as f:
             json.dump(snap, f)

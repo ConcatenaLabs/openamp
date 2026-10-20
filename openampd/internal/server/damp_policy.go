@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -45,12 +46,14 @@ import (
 //	  prepare   POST /v1/issuer/damp-policy
 //	            Applies the requested change to the CURRENT published policy,
 //	            recomputes pi_{n+1}, builds and validates snapshot n+1, logs the
-//	            REASON publicly, and returns the derive-ready document plus the
-//	            32 bytes the issuer must sign. Nothing is signed, published or
+//	            REASON publicly, and returns the derive-ready documents (the next
+//	            snapshot and the current one) plus the 32 bytes the issuer must
+//	            sign. Nothing is signed, published or
 //	            broadcast.
 //	  (issuer)  opendamp derive --snapshot <derive_snapshot>
 //	            gives the new p_cmr and C_V(pi_{n+1}) scriptPubKey;
-//	            opendamp issuer-update --snapshot <current> --next-snapshot <next>
+//	            opendamp issuer-update --snapshot <derive_current>
+//	                                   --next-snapshot <derive_snapshot>
 //	            gives the finished, signed respend.
 //	  complete  POST /v1/issuer/damp-policy/{id}/complete
 //	            Verifies the issuer's snapshot signature against the asset's
@@ -263,12 +266,10 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// The derive-ready document is the canonical NEXT snapshot plus the issuer
-	// update key, which is a compile-time parameter of G and is not part of the
-	// snapshot format. It is outside the bytes the hash and signature cover.
-	var deriveDoc map[string]any
-	_ = json.Unmarshal(canonical, &deriveDoc)
-	deriveDoc["issuer_update_key"] = asset.Damp.IssuerUpdateKey
+	// The NEXT snapshot and the CURRENT one, each derive-ready: what
+	// `opendamp issuer-update` reads as --next-snapshot and --snapshot.
+	deriveDoc := s.deriveDocument(canonical, asset.Damp.IssuerUpdateKey, "")
+	deriveCurrent := s.deriveDocument(latest.Canonical, asset.Damp.IssuerUpdateKey, "")
 
 	httpJSON(w, map[string]any{
 		"policy_id":      pending.ID,
@@ -301,8 +302,9 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 			"Run `opendamp derive` against derive_snapshot and post its p_cmr; a verifier_cmr equal to verifier_cmr_current is refused, " +
 			"because it would recreate the old policy.",
 		"derive_snapshot": deriveDoc,
+		"derive_current":  deriveCurrent,
 		"next": "run `opendamp derive --snapshot <derive_snapshot>` for the new verifier CMR and address, then " +
-			"`opendamp issuer-update --snapshot <current> --next-snapshot <derive_snapshot> --request <fee utxo> --issuer-privkey <key>` " +
+			"`opendamp issuer-update --snapshot <derive_current> --next-snapshot <derive_snapshot> --request <fee utxo> --issuer-privkey <key>` " +
 			"for the signed respend, and POST both to /v1/issuer/damp-policy/" + pending.ID + "/complete with your signature over to_sign. " +
 			"Nothing is published or broadcast until you do, and holders keep transferring under the current policy until it confirms.",
 	})
@@ -798,4 +800,36 @@ func checkVerifierRespend(tx *elements.Tx, p *store.PendingDampPolicy, nextSPK [
 		return nil
 	}
 	return fmt.Errorf("signed_tx does not recreate the rules output under the new policy; it must pay %s with exactly %d of %s", wantSPK, p.VerifierAmount, p.VerifierAsset)
+}
+
+// deriveDocument is a snapshot as `opendamp` reads it: the canonical
+// snapshot/v1 document exactly as published (pi, both roots, the entries),
+// plus the three things a derivation needs that the snapshot does not carry,
+// none of them inside the bytes its hash and signature cover: the issuer
+// update key (a compile-time parameter of G), the network (address encoding;
+// the node's own chain unless the request named one) and the chain's genesis
+// hash (a regtest chain's sighashes commit to it). Numbers are decoded as
+// written, so a full-range uint64 survives the round trip.
+func (s *Server) deriveDocument(canonical []byte, issuerUpdateKey, network string) map[string]any {
+	doc := map[string]any{}
+	dec := json.NewDecoder(bytes.NewReader(canonical))
+	dec.UseNumber()
+	_ = dec.Decode(&doc)
+	if network == "" {
+		network = s.chainNetwork()
+	}
+	doc["issuer_update_key"] = issuerUpdateKey
+	doc["network"] = network
+	doc["genesis"] = displayHash(s.genesis)
+	return doc
+}
+
+// chainNetwork is the opendamp network name of the node's chain: "testnet"
+// on the Sequentia testnet, else "regtest" (any other chain, its genesis hash
+// carried beside it).
+func (s *Server) chainNetwork() string {
+	if displayHash(s.genesis) == sequentiaTestnetGenesis {
+		return "testnet"
+	}
+	return "regtest"
 }

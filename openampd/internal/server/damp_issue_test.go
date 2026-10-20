@@ -301,15 +301,28 @@ func TestDamp_FullIssuance(t *testing.T) {
 	if assetID == vAssetID {
 		t.Fatal("the verifier asset must differ from the asset")
 	}
-	// The derive-ready document carries the two fields the snapshot format does
-	// not, and the canonical snapshot must NOT carry them (they are outside the
-	// bytes the hash and signature commit to).
+	// The derive-ready document is the published snapshot verbatim plus the
+	// three fields the snapshot format does not carry (the node's own chain:
+	// this test node's genesis is not the testnet's), and the canonical
+	// snapshot must NOT carry them (they are outside the bytes the hash and
+	// signature commit to).
 	derive, _ := prep["derive_snapshot"].(map[string]any)
-	if derive["issuer_update_key"] != v.UserCovenants[1].OwnerXOnly || derive["network"] != "testnet" {
+	if derive["issuer_update_key"] != v.UserCovenants[1].OwnerXOnly || derive["network"] != "regtest" ||
+		derive["genesis"] != displayHash(s.genesis) {
 		t.Fatalf("derive_snapshot is not derive-ready: %v", derive)
 	}
+	var prepSnap map[string]any
 	snapRaw, _ := json.Marshal(prep["snapshot"])
-	if strings.Contains(string(snapRaw), "issuer_update_key") || strings.Contains(string(snapRaw), "network") {
+	_ = json.Unmarshal(snapRaw, &prepSnap)
+	for k, val := range prepSnap {
+		got, _ := json.Marshal(derive[k])
+		want, _ := json.Marshal(val)
+		if string(got) != string(want) {
+			t.Fatalf("derive_snapshot's %s is %s, the published snapshot's %s", k, got, want)
+		}
+	}
+	if strings.Contains(string(snapRaw), "issuer_update_key") || strings.Contains(string(snapRaw), "network") ||
+		strings.Contains(string(snapRaw), "genesis") {
 		t.Fatalf("the canonical snapshot must not carry derive-only fields: %s", snapRaw)
 	}
 	// Nothing of A exists yet.
