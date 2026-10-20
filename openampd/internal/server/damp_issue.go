@@ -145,7 +145,8 @@ type dampIssueRequest struct {
 	// update the policy or halt the asset. It is committed into the contract and
 	// therefore into the asset id.
 	IssuerUpdateKey string `json:"issuer_update_key"`
-	// Network selects the address encoding `opendamp derive` should use. It is
+	// Network selects the address encoding `opendamp derive` should use; absent,
+	// the node's own chain (chainNetwork). It is
 	// passed through into the derive-ready document ONLY; nothing in the
 	// commitment depends on it.
 	Network string `json:"network,omitempty"`
@@ -449,9 +450,6 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	network := req.Network
-	if network == "" {
-		network = "testnet"
-	}
 
 	// A's reissuance token goes into a supply cap at completion; check now,
 	// before anything is minted, that one can be made.
@@ -647,15 +645,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		"pi": piHex, "whitelist_root": pending.WhitelistRoot, "contract_hash": pending.ContractHash,
 	})
 
-	// The derive-ready document is the canonical snapshot plus the two fields
-	// `opendamp derive` needs and the snapshot format does not carry: the issuer
-	// update key (a compile-time parameter of G) and the chain (address encoding
-	// only). Extra keys are ignored by the CLI's deserializer, and they are NOT
-	// part of the canonical bytes the hash and signature commit to.
-	var deriveDoc map[string]any
-	_ = json.Unmarshal(snapCanonical, &deriveDoc)
-	deriveDoc["issuer_update_key"] = req.IssuerUpdateKey
-	deriveDoc["network"] = network
+	deriveDoc := s.deriveDocument(snapCanonical, req.IssuerUpdateKey, network)
 
 	httpJSON(w, map[string]any{
 		"prepare_id":           pending.ID,

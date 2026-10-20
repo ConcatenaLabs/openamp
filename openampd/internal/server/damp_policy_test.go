@@ -239,6 +239,15 @@ func TestDampPolicy_FreezeRemovesHolderAndAdvancesPi(t *testing.T) {
 	if fmt.Sprint(prep["seq"]) != "1" {
 		t.Fatalf("seq = %v, want 1", prep["seq"])
 	}
+	// Both derive-ready documents are what `opendamp issuer-update` reads:
+	// the current policy as --snapshot, the next as --next-snapshot, each the
+	// published form plus the update key, the network and the genesis.
+	for name, wantPi := range map[string]string{"derive_current": f.pi0, "derive_snapshot": piNext} {
+		d, _ := prep[name].(map[string]any)
+		if d["pi"] != wantPi || d["issuer_update_key"] == nil || d["network"] == nil || d["genesis"] == nil {
+			t.Fatalf("%s is not derive-ready for pi %s: %v", name, wantPi, d)
+		}
+	}
 	wl, _ := prep["whitelist"].([]any)
 	if len(wl) != len(f.v.whitelistKeys())-1 {
 		t.Fatalf("the holder list must lose exactly the frozen holder: %v", wl)
