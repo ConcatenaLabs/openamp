@@ -433,6 +433,10 @@ type PendingDampIssuance struct {
 	FundingTxid string `json:"funding_txid"`
 	FundingVout uint32 `json:"funding_vout"`
 	FundingSats uint64 `json:"funding_sats"`
+	// FundingAsset is the funding coin's asset (display hex): phase 1's fee
+	// asset, which phase 2 pays its fee in too, since the asset id commits to
+	// that coin.
+	FundingAsset string `json:"funding_asset,omitempty"`
 
 	// SupplyCap and CapColdKey configure the supply cap A's reissuance token
 	// moves into at completion: the most ever minted through it (0: none) and

@@ -124,6 +124,7 @@ type oa4Node struct {
 	rawTxs     map[string]string            // txid -> raw hex (getrawtransaction / spentOutputs)
 	scan       map[string][]rpc.ScanUnspent // spk -> UTXOs (scantxoutset)
 	feeUnspent []rpc.Unspent                // listunspent (fee funding)
+	feeRates   map[string]uint64            // getfeeexchangerates (nil: the fee asset at 1e8)
 	addrSpk    map[string]string            // address -> scriptPubKey hex (getaddressinfo)
 	newAddr    string                       // getnewaddress
 	broadcast  string                       // sendrawtransaction return txid
@@ -166,6 +167,12 @@ func (n *oa4Node) handler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(v any) { _ = json.NewEncoder(w).Encode(map[string]any{"result": v, "error": nil}) }
 	switch req.Method {
+	case "getfeeexchangerates":
+		if n.feeRates != nil {
+			reply(n.feeRates)
+			return
+		}
+		reply(map[string]uint64{oa4FeeID: 100000000})
 	case "getrawtransaction":
 		var txid string
 		_ = json.Unmarshal(req.Params[0], &txid)

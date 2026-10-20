@@ -71,6 +71,8 @@ func (n *e2eNode) handler(w http.ResponseWriter, r *http.Request) {
 		return s
 	}
 	switch req.Method {
+	case "getfeeexchangerates":
+		reply(map[string]uint64{e2eFeeID: 100000000})
 	case "getblockhash":
 		reply(strings.Repeat("11", 32))
 	case "getrawtransaction":

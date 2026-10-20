@@ -20,7 +20,6 @@ ExecStart=/root/sequentia/openamp/openampd/openampd \
   -rpcauth ${OPENAMPD_RPCAUTH} \
   -rpcwallet ${OPENAMPD_WALLET} \
   -issuertoken ${OPENAMPD_ISSUER_TOKEN} \
-  -feeasset ${OPENAMPD_FEE_ASSET} \
   -feesats 20000 \
   -demoissuer
 Restart=on-failure

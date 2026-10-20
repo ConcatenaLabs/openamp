@@ -173,13 +173,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Funding input for the issuance (consolidates blinded fee change when
 	// that is all that is left; see consolidate.go).
-	funding, err := s.feeUTXO(s.cfg.FeeSats * 3)
+	funding, err := s.feeUTXO(3)
 	if err != nil {
-		httpErr(w, 502, "%v", err)
-		return
-	}
-	if funding == nil {
-		httpErr(w, 503, "no funding utxo")
+		httpErr(w, feeStatus(err), "%v", err)
 		return
 	}
 	entropy, assetID, tokenID := fastmerkle.DeriveIssuanceIDs(internalHash(funding.txid), funding.vout, digest)
@@ -222,7 +218,7 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(funding.asset)
 	// Output nonces + destinations. For a transparent mint (the default) every
 	// output is explicit with a null nonce. For a confidential MINT REQUEST (a
 	// property of this transaction only, never of the asset) the enclave output
@@ -269,9 +265,9 @@ func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 			Nonce: holderNonce, ScriptPubKey: holderTree.ScriptPubKey()},
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(tokenID), Value: elements.ExplicitValue(1_0000_0000),
 			Nonce: tokenNonce, ScriptPubKey: tokenSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.sats - s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.sats - funding.fee),
 			Nonce: changeNonce, ScriptPubKey: changeSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	if req.Confidential {
@@ -570,17 +566,13 @@ func (s *Server) handleClawback(w http.ResponseWriter, r *http.Request) {
 
 	// Fee funding (consolidates blinded fee change when that is all that is
 	// left; see consolidate.go).
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
+	feeIn, err := s.feeUTXO(2)
 	if err != nil {
-		httpErr(w, 502, "%v", err)
-		return
-	}
-	if feeIn == nil {
-		httpErr(w, 503, "no fee funds")
+		httpErr(w, feeStatus(err), "%v", err)
 		return
 	}
 	assetID := elements.MustHex32(asset.ID)
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(feeIn.asset)
 	tx := &elements.Tx{Version: 2}
 	for _, u := range utxos {
 		tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(u.txid), N: u.vout}})
@@ -597,7 +589,7 @@ func (s *Server) handleClawback(w http.ResponseWriter, r *http.Request) {
 	// legacy per-asset flag: confidentiality is per transfer.
 	seizedNonce := elements.NullNonce()
 	feeChangeOut := &elements.TxOut{
-		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
+		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - feeIn.fee),
 		Nonce: elements.NullNonce(),
 	}
 	if anyBlindedIn {
@@ -606,7 +598,7 @@ func (s *Server) handleClawback(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 500, "confidential seized output: %v", err)
 			return
 		}
-		feeChangeOut, err = s.confWalletOutput(feeIn.sats - s.cfg.FeeSats)
+		feeChangeOut, err = s.confWalletOutput(feeIn.asset, feeIn.sats-feeIn.fee)
 		if err != nil {
 			httpErr(w, 502, "confidential fee change: %v", err)
 			return
@@ -624,7 +616,7 @@ func (s *Server) handleClawback(w http.ResponseWriter, r *http.Request) {
 		&elements.TxOut{Asset: elements.ExplicitAsset(assetID), Value: elements.ExplicitValue(total),
 			Nonce: seizedNonce, ScriptPubKey: issuerTree.ScriptPubKey()},
 		feeChangeOut,
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	tx.NormalizeWitness()

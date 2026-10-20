@@ -24,7 +24,8 @@ go build -o openampd/openampd ./openampd/cmd/openampd
 There is no CI. `go build ./... && go test ./...` before every PR is the whole gate, plus
 `e2e/supply_cap.py` (a real node and openampd; its docstring has the command) for a change to
 issuance, minting or the supply cap, and `e2e/verifier_token.py` for a change to network-enforced
-issuance or the verifier asset's token.
+issuance or the verifier asset's token, and `e2e/fee_asset.py` for a change to how a fee is
+funded.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -42,6 +43,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
 | `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
+| `e2e/fee_asset.py` | the fee rule end to end: no `-feeasset`, each fee paid in the asset whose largest coin covers the most fees, a node accepting nothing refused, a `-feeasset` the node does not accept refused at start |
 | `e2e/verifier_token.py` | a network-enforced asset's verifier-asset token end to end: issued into its covenant, a halt that records, a resume, a transfer after it |
 | `openampd/testdata/opendamp-addresses.json` | a pinned copy of `vectors/addresses.json` from the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenants; the Go mirror tests check against it, so copy it again whenever opendamp's programs change |
 | `spec/` | frozen formats (contract v1), venue/wallet integration spec |
@@ -66,6 +68,11 @@ from GitHub and builds there — never edit source on the server, never copy bin
   issuance entropy. Changing the contract shape changes every derived asset id. `spec/contract-v1.md`
   is frozen; pre-freeze assets on the live testnet carry legacy fields and must be verified as-is,
   because the hash commits to the exact bytes.
+- **No asset pays this server's fees by default.** Every server-funded transaction picks its
+  fee asset by the wallet rule in `openampd/internal/server/feeasset.go`, from what the node
+  accepts now; `-feeasset` is an operator's pin, refused unless the node accepts it. Never add a
+  fallback to the policy asset or to any other: on a node that does not accept it, a fallback is
+  a transaction that is never mined, and anywhere else it is a privilege.
 - **A restricted asset must never appear in a fee output.** The policy server refuses to co-sign
   such a transaction. That rule is what stops a restricted asset being swept into a block
   producer's coinbase; do not relax it for convenience.

@@ -196,7 +196,7 @@ func TestConsolidate_NothingToConsolidate(t *testing.T) {
 		"asset": f.asset.ID, "sender_aid": f.escrow.AID, "recipient_aid": f.investor.AID,
 		"atoms": 1000, "fee_mode": "sponsor",
 	})
-	if code != 503 || !strings.Contains(body, "no fee funds") {
+	if code != 503 || !strings.Contains(body, "no fee coin: this server's wallet holds no explicit coin") {
 		t.Fatalf("want the usual 503, got %d %s", code, body)
 	}
 	req := httptest.NewRequest("POST", "/v1/issuer/consolidate", nil)

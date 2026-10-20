@@ -437,17 +437,13 @@ func (s *Server) handlePledgeSeize(w http.ResponseWriter, r *http.Request) {
 	// another lender's collateral or the holder's free balance.
 	change := total - p.Atoms
 
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
+	feeIn, err := s.feeUTXO(2)
 	if err != nil {
-		httpErr(w, 502, "%v", err)
-		return
-	}
-	if feeIn == nil {
-		httpErr(w, 503, "no fee funds")
+		httpErr(w, feeStatus(err), "%v", err)
 		return
 	}
 	assetID := elements.MustHex32(asset.ID)
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(feeIn.asset)
 	tx := &elements.Tx{Version: 2}
 	for _, u := range utxos {
 		tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(u.txid), N: u.vout}})
@@ -461,7 +457,7 @@ func (s *Server) handlePledgeSeize(w http.ResponseWriter, r *http.Request) {
 	seizedNonce := elements.NullNonce()
 	changeNonce := elements.NullNonce()
 	feeChangeOut := &elements.TxOut{
-		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
+		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - feeIn.fee),
 		Nonce: elements.NullNonce(),
 	}
 	if anyBlindedIn {
@@ -479,7 +475,7 @@ func (s *Server) handlePledgeSeize(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		feeChangeOut, err = s.confWalletOutput(feeIn.sats - s.cfg.FeeSats)
+		feeChangeOut, err = s.confWalletOutput(feeIn.asset, feeIn.sats-feeIn.fee)
 		if err != nil {
 			httpErr(w, 502, "confidential fee change: %v", err)
 			return
@@ -503,7 +499,7 @@ func (s *Server) handlePledgeSeize(w http.ResponseWriter, r *http.Request) {
 				Nonce: changeNonce, ScriptPubKey: holderTree.ScriptPubKey()})
 	}
 	tx.Out = append(tx.Out, feeChangeOut,
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil})
 	tx.NormalizeWitness()
 

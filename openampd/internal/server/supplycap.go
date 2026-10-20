@@ -313,7 +313,8 @@ type capBuild struct {
 }
 
 // capMintTx builds and signs a mint of `atoms` through the asset's supply cap
-// into targetSpk, the fee paid from an explicit coin of this server's fee asset.
+// into targetSpk, the fee paid from an explicit wallet coin of the asset the
+// fee rule chooses (feeasset.go).
 // It returns the transaction with the fee coin signed and what the covenant's
 // next coin will be. Nothing is broadcast.
 func (s *Server) capMintTx(asset *store.Asset, targetSpk []byte, atoms uint64) (string, *capBuild, error) {
@@ -322,12 +323,12 @@ func (s *Server) capMintTx(asset *store.Asset, targetSpk []byte, atoms uint64) (
 	if err != nil {
 		return "", nil, err
 	}
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
+	feeIn, err := s.feeUTXO(2)
+	if nf, ok := err.(*NoFeeCoin); ok {
+		return "", nil, refuse("%s", nf.Reason)
+	}
 	if err != nil {
 		return "", nil, fmt.Errorf("fee funding: %w", err)
-	}
-	if feeIn == nil {
-		return "", nil, refuse("policy server has no explicit fee coin of its fee asset")
 	}
 	feeHex, err := s.rawTxHex(feeIn.txid)
 	if err != nil {
@@ -347,7 +348,7 @@ func (s *Server) capMintTx(asset *store.Asset, targetSpk []byte, atoms uint64) (
 		"amount": strconv.FormatUint(atoms, 10), "mint_to": hex.EncodeToString(targetSpk),
 		"fee": map[string]any{
 			"coins":     []any{map[string]any{"tx": feeHex, "vout": feeIn.vout}},
-			"atoms":     strconv.FormatUint(s.cfg.FeeSats, 10),
+			"atoms":     strconv.FormatUint(feeIn.fee, 10),
 			"change_to": changeSpk,
 		},
 	}
@@ -451,16 +452,12 @@ func (s *Server) handleSupplyCapMove(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 502, "%v", err)
 		return
 	}
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 3)
+	feeIn, err := s.feeUTXO(3)
 	if err != nil {
-		httpErr(w, 502, "fee funding: %v", err)
+		httpErr(w, feeStatus(err), "fee funding: %v", err)
 		return
 	}
-	if feeIn == nil {
-		httpErr(w, 503, "policy server has no explicit fee coin of its fee asset")
-		return
-	}
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(feeIn.asset)
 	tx := &elements.Tx{Version: 2}
 	for _, t := range tokens {
 		tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(t.txid), N: t.vout}})
@@ -485,9 +482,9 @@ func (s *Server) handleSupplyCapMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx.Out = append(tx.Out,
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - feeIn.fee),
 			Nonce: changeNonce, ScriptPubKey: changeSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	tx.NormalizeWitness()
