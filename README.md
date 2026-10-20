@@ -82,8 +82,10 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 ```json
 {"id": "<transfer id>", "tx": "<unsigned tx hex>",
  "to_sign": [{"input": 0, "sighash": "<32-byte hex>", "pubkey": "<x-only hex>"}],
- "convert_atoms": 100, "fee_sats": 1000}
+ "convert_atoms": 100, "fee_sats": 1000, "fee_asset": "<display hex>"}
 ```
+
+`fee_sats` is the fee in atoms of `fee_asset`, the asset the server's fee rule picked for this transaction.
 
 The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending transfers, burns and clawbacks expire after 72 hours.
 
@@ -133,7 +135,7 @@ Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <lea
 | `GET /v1/issuer/holders?asset=<id>` | Ownership report |
 | `POST /v1/issuer/anchor` | Anchor the transparency-log head on-chain |
 | `POST /v1/issuer/rotate-blinding` | Rotate an asset's blinding-key epoch and re-import every holder's key |
-| `POST /v1/issuer/consolidate` | Sweep blinded fee-asset change into an explicit coin |
+| `POST /v1/issuer/consolidate` | Sweep blinded change of an accepted fee asset into an explicit coin |
 
 If no issuer token is configured, every issuer request is rejected (401).
 
@@ -163,7 +165,7 @@ Every mint goes through the asset's supply cap, built and signed by the `token-c
 
 `holds_the_whole_token` compares the covenant's coin with the token amount the issuance created: a coin of the token anywhere else could mint outside the cap.
 
-**`POST /v1/issuer/reissue`**, body `{"asset", "target_aid", "atoms", "request_id"}`, mints into the target's enclave through the covenant and answers `{"reissue_txid", "status", "minted_atoms", "cap_atoms", "room_atoms"}`. A mint past the cap is refused (409) before anything is built, as the covenant would refuse it on chain. `"confidential": true` is refused: the amount is public on the covenant's own issuance. The fee comes from an explicit coin of `-feeasset`.
+**`POST /v1/issuer/reissue`**, body `{"asset", "target_aid", "atoms", "request_id"}`, mints into the target's enclave through the covenant and answers `{"reissue_txid", "status", "minted_atoms", "cap_atoms", "room_atoms"}`. A mint past the cap is refused (409) before anything is built, as the covenant would refuse it on chain. `"confidential": true` is refused: the amount is public on the covenant's own issuance. The fee comes from an explicit wallet coin of the asset the fee rule picks.
 
 **`POST /v1/issuer/supply-cap`**, body `{"asset", "cap", "cap_cold_key"?, "token"?, "entropy"?}`, moves an issued asset's token from the server wallet into a supply cap with nothing minted: every wallet coin of the token, in one transaction. An asset whose record lacks its issuance entropy and token id names them (the node wallet's `listissuances` shows both); the tool refuses an entropy that does not derive the asset and its token. Asking again answers with the covenant.
 
@@ -326,14 +328,14 @@ The same flow, driven programmatically against a regtest node, is the committed 
 
 `openampd` needs one Sequentia node (`sequentiad`) with a funded wallet, and the `token-covenants` tool for the supply caps; there are no consensus changes and no patched node. An explorer (electrs) instance is optional: it is only the prevout fallback for `POST /v1/cosign` when the node runs without `-txindex`. RPC usage:
 
-- chain queries: `getblockcount`, `getblockhash`, `getblock` (follower), `gettxout` (prevout resolution and the supply cap's coin), `getrawtransaction` (the coins handed to the supply-cap tool), `scantxoutset` (enclave balances and holder reports), `decodescript` (address rendering), `dumpassetlabels` (fee-asset default);
+- chain queries: `getblockcount`, `getblockhash`, `getblock` (follower), `gettxout` (prevout resolution and the supply cap's coin), `getrawtransaction` (the coins handed to the supply-cap tool), `scantxoutset` (enclave balances and holder reports), `decodescript` (address rendering), `getfeeexchangerates` and `dumpassetlabels` (the assets the node accepts for fees, and its rate for each);
 - wallet operations: `listunspent`, `getnewaddress`, `getaddressinfo`, `signrawtransactionwithwallet`, `sendrawtransaction`, and `createrawtransaction` + `fundrawtransaction` for log anchors.
 
 The node runs one `scantxoutset` at a time, so openampd queues its own scans (a wallet that reads every restricted balance at once gets each answer in turn) and waits up to 30 seconds for a scan that another program started on the same node, answering 502 only if that scan is still running.
 
 Enclave transactions are built by openampd's own minimal Elements codec (`openampd/internal/elements`): explicit assets and values end to end, Elements taproot with the `/elements` tagged hashes and leaf version `0xc4`, and the Elements taproot sighash. Byte-exactness is enforced by golden vectors generated from the node repository's functional-test framework. Issuance entropy and asset/token IDs are derived in `openampd/internal/fastmerkle` (the Elements two-leaf fast merkle root).
 
-The node pays and accepts fees per Sequentia's open fee market: openampd attaches its fees in one configurable ordinary asset (`-feeasset`, defaulting to the chain's policy asset), which must be on the producers' accepted-fee-asset whitelist.
+Fees follow Sequentia's open fee market: a transaction pays its fee in exactly one asset, which each node values at its own rate, and no asset is the default. openampd chooses the fee asset of every transaction it funds by the rule every Sequentia wallet uses: among the assets the node accepts for fees (`getfeeexchangerates`), the one whose largest explicit coin in openampd's wallet covers the most fees, valued at the node's rate (a tie goes to the lower asset id). The policy asset is one candidate among the others. The asset a transaction moves would come first if the node accepted it, but every asset openampd moves is a restricted asset, its reissuance token or a verifier asset, and none of them ever pays a fee (Rule 1), even on a node that rates one. The fee is `-feesats`, a value in the node's reference unit, paid as `ceil(feesats × 1e8 / rate)` atoms of the chosen asset, so it is worth the same whichever asset pays. When no coin of an accepted asset covers it, the request is refused (503) with a line naming the assets the node accepts, and nothing is built; each choice is logged (`fee: <atoms> atoms of <asset>, from <coin>`). `-feeasset` pins one asset instead: openampd refuses to start when the node does not accept it, and refuses a transaction when the node has stopped accepting it since.
 
 ## Build, run, test
 
@@ -355,7 +357,6 @@ Run against a node:
   -rpcauth user:pass \            # or cookie:/path/to/.cookie
   -rpcwallet mywallet \
   -issuertoken <long-random-token> \
-  -feeasset <display hex of the fee asset> \
   -demoissuer                     # testnet demos only: issuer keys server-side
   -signer frost                   # 2-of-3 threshold policy key (default: local)
 ```
@@ -368,8 +369,8 @@ Run against a node:
 | `-rpcauth` | (required) | `user:pass` or `cookie:<path>` |
 | `-rpcwallet` | (none) | wallet name, appended as `/wallet/<name>` |
 | `-issuertoken` | (none) | bearer token gating `/v1/issuer/*`; empty locks the issuer API |
-| `-feeasset` | chain policy asset | display hex of the ordinary asset openampd pays fees in |
-| `-feesats` | `1000` | flat fee attached to server-funded transactions, in fee-asset atoms |
+| `-feeasset` | `$OPENAMPD_FEE_ASSET`, else none | display hex of the one asset openampd pays fees in, refused at start unless the node accepts it for fees; unset, each transaction's fee asset follows the wallet rule (see "How openampd uses the Sequentia node") |
+| `-feesats` | `1000` | the fee of each server-funded transaction, valued in the node's reference unit (atoms at a rate of 1e8) and paid in its fee asset at the node's rate |
 | `-tokentool` | `$OPENAMPD_TOKEN_TOOL` | path to `token-covenants` (sequentia-contracts' `tools/token-covenants`); unset, issuance and minting are refused |
 | `-capcoldkey` | `$OPENAMPD_CAP_COLD_KEY` | default cold key (x-only hex) of a new supply cap, held off this server |
 | `-capoperatorkey` | `<datadir>/cap-operator.key` | this server's supply-cap operator key file, made on first start |

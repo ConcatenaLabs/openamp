@@ -178,16 +178,12 @@ func (s *Server) handleVerifierTokenMove(w http.ResponseWriter, r *http.Request)
 		httpErr(w, 502, "%v", err)
 		return
 	}
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 3)
+	feeIn, err := s.feeUTXO(3)
 	if err != nil {
-		httpErr(w, 502, "fee funding: %v", err)
+		httpErr(w, feeStatus(err), "fee funding: %v", err)
 		return
 	}
-	if feeIn == nil {
-		httpErr(w, 503, "policy server has no explicit fee coin of its fee asset")
-		return
-	}
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(feeIn.asset)
 	tx := &elements.Tx{Version: 2}
 	for _, t := range tokens {
 		tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(t.txid), N: t.vout}})
@@ -212,9 +208,9 @@ func (s *Server) handleVerifierTokenMove(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	tx.Out = append(tx.Out,
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - feeIn.fee),
 			Nonce: changeNonce, ScriptPubKey: changeSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	tx.NormalizeWitness()

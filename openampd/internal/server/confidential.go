@@ -292,18 +292,19 @@ func (s *Server) blindTx(tx *elements.Tx) (*elements.Tx, error) {
 	return bt, nil
 }
 
-// confWalletOutput builds an output paying `sats` of the fee asset to a fresh
+// confWalletOutput builds an output paying `sats` of the fee asset `asset` (a
+// transaction's fee change) to a fresh
 // per-call blinded (blech32) wallet address, so it blinds and counts toward the
 // >=2 blinded outputs a blinded transaction needs. OA-8: the per-call blinded
 // address forces blinding for this output even on a wallet running
 // -blindedaddresses=0, so confidential transfers and burns never depend on
 // node000's default-blinding flag.
-func (s *Server) confWalletOutput(sats uint64) (*elements.TxOut, error) {
+func (s *Server) confWalletOutput(asset string, sats uint64) (*elements.TxOut, error) {
 	nonce, spk, err := s.blindedWalletOutput()
 	if err != nil {
 		return nil, err
 	}
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(asset)
 	return &elements.TxOut{
 		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(sats),
 		Nonce: nonce, ScriptPubKey: spk,

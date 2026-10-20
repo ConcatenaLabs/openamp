@@ -33,7 +33,10 @@ OPENAMPD_RPC=http://127.0.0.1:<node-rpc-port>
 OPENAMPD_RPCAUTH=<rpcuser>:<rpcpassword>       # or cookie:/root/.../.cookie
 OPENAMPD_WALLET=treasury-clean
 OPENAMPD_ISSUER_TOKEN=<long-random-token>       # gates the issuer API
-OPENAMPD_FEE_ASSET=<display-hex of tSEQ or USDX>   # the asset openampd pays fees in
+# OPENAMPD_FEE_ASSET=<display hex>              # optional: pins the one asset openampd
+                                                # pays fees in; leave it unset and each
+                                                # transaction pays in the asset the
+                                                # wallet rule picks
 OPENAMPD_SIGNER=frost                           # policy-key backend; omit for `local`
 OPENAMPD_DAMP_REGISTRY=/root/sequentia/opendamp/vectors/addresses.json
                                                 # OpenDAMP CMR pinning file; omit to
@@ -59,13 +62,19 @@ records the move. Assets issued before openampd held its tokens in supply caps
 have their tokens moved in with `POST /v1/issuer/supply-cap`, and a
 network-enforced asset's verifier-asset token with `POST /v1/issuer/verifier-token`.
 
-The fee asset must be one the testnet producers accept (on their
-`setfeeexchangerates` whitelist). tSEQ (the policy asset) always works.
+openampd pays each transaction's fee in the asset the wallet rule picks:
+among the assets the node accepts for fees (its `setfeeexchangerates`
+whitelist), the one whose largest explicit coin in `OPENAMPD_WALLET` covers the
+most fees at the node's rate. Keep that wallet funded in any accepted asset,
+or several. `-feesats` in the unit is the fee's value in the node's reference
+unit, so it buys the same in every asset. `OPENAMPD_FEE_ASSET`, when set, pins
+one asset instead, and openampd refuses to start unless the node accepts it.
 
-The unit passes none of the last three as flags; `openampd` reads them from
-the environment, so the env file is the only place they need to be set. The
-public instance runs the FROST backend and has issued network-enforced assets,
-which needs the first two.
+The unit passes none of the variables after `OPENAMPD_ISSUER_TOKEN` as flags;
+`openampd` reads them from the environment, so the env file is the only place
+they need to be set. The public instance runs the FROST backend and has issued
+network-enforced assets, which needs `OPENAMPD_SIGNER` and
+`OPENAMPD_DAMP_REGISTRY`.
 
 ## 3. Install and start the service
 

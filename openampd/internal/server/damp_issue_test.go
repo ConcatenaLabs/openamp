@@ -126,6 +126,8 @@ func (n *dampNode) handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch req.Method {
+	case "getfeeexchangerates":
+		reply(map[string]uint64{oa4FeeID: 100000000})
 	case "getblockhash":
 		reply(strings.Repeat("01", 32))
 	case "gettxout":

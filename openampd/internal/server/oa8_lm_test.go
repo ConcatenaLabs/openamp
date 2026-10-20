@@ -85,6 +85,8 @@ func (n *issueNode) handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch req.Method {
+	case "getfeeexchangerates":
+		reply(map[string]uint64{oa4FeeID: 100000000})
 	case "gettxout":
 		reply(map[string]any{"confirmations": 1, "value": 100000.0 / 1e8})
 	case "listunspent":

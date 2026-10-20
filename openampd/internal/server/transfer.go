@@ -601,13 +601,9 @@ func (s *Server) handleTransferBuild(w http.ResponseWriter, r *http.Request) {
 
 	// Server fee funding (consolidates blinded fee change when that is all
 	// that is left; see consolidate.go).
-	feeIn, err := s.feeUTXO(s.cfg.FeeSats * 2)
+	feeIn, err := s.feeUTXO(2)
 	if err != nil {
-		httpErr(w, 502, "fee funding: %v", err)
-		return
-	}
-	if feeIn == nil {
-		httpErr(w, 503, "policy server has no fee funds")
+		httpErr(w, feeStatus(err), "fee funding: %v", err)
 		return
 	}
 	changeAddr, err := s.wallet.GetNewAddress()
@@ -631,7 +627,7 @@ func (s *Server) handleTransferBuild(w http.ResponseWriter, r *http.Request) {
 	// Assemble.
 	tx := &elements.Tx{Version: 2}
 	assetID := elements.MustHex32(asset.ID)
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(feeIn.asset)
 	var enclaveIdx []int
 	for i, u := range chosen {
 		tx.In = append(tx.In, &elements.TxIn{Prevout: elements.OutPoint{Hash: internalHash(u.txid), N: u.vout}})
@@ -740,7 +736,7 @@ func (s *Server) handleTransferBuild(w http.ResponseWriter, r *http.Request) {
 	// the input blinding factors (see blindTx: an all-explicit-output tx over
 	// blinded inputs can never balance). Otherwise a plain wallet output.
 	if req.Confidential || anyBlindedIn {
-		feeChange, err := s.confWalletOutput(feeIn.sats - s.cfg.FeeSats)
+		feeChange, err := s.confWalletOutput(feeIn.asset, feeIn.sats-feeIn.fee)
 		if err != nil {
 			httpErr(w, 502, "%v", err)
 			return
@@ -748,12 +744,12 @@ func (s *Server) handleTransferBuild(w http.ResponseWriter, r *http.Request) {
 		tx.Out = append(tx.Out, feeChange)
 	} else {
 		tx.Out = append(tx.Out, &elements.TxOut{
-			Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - s.cfg.FeeSats),
+			Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.sats - feeIn.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: mustHexBytes(changeSpk),
 		})
 	}
 	tx.Out = append(tx.Out, &elements.TxOut{
-		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(feeIn.fee),
 		Nonce: elements.NullNonce(), ScriptPubKey: nil,
 	})
 	tx.NormalizeWitness()
@@ -822,7 +818,7 @@ func (s *Server) handleTransferBuild(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"id": id, "tx": hex.EncodeToString(tx.Serialize()),
-		"to_sign": signing, "convert_atoms": convertAtoms, "fee_sats": s.cfg.FeeSats,
+		"to_sign": signing, "convert_atoms": convertAtoms, "fee_sats": feeIn.fee, "fee_asset": feeIn.asset,
 	}
 	// Only surface payment_inputs when there is a payment leg, so a no-payment
 	// build's response is identical to M5's.
@@ -1261,7 +1257,6 @@ func (s *Server) dampHolderList(asset *store.Asset) []damp.PredicateEntry {
 	}
 	return snap.Predicates.Whitelist.Entries
 }
-
 
 // saturatingSub keeps a refusal message honest: an unsigned underflow would
 // report a holder as owning eighteen quintillion atoms, which is the sort of

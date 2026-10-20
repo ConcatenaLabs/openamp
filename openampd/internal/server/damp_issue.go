@@ -476,17 +476,9 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 	// about A, which is what breaks the circularity. Funding must cover this
 	// transaction's fee and the NEXT one's, because phase 2 spends this
 	// transaction's fee change as A's issuance input.
-	funding, err := s.feeUTXO(s.cfg.FeeSats * 4)
+	funding, err := s.feeUTXO(4)
 	if err != nil {
-		httpErr(w, 502, "%v", err)
-		return
-	}
-	if funding == nil {
-		httpErr(w, 503, "no funding utxo")
-		return
-	}
-	if funding.sats < s.cfg.FeeSats*3 {
-		httpErr(w, 503, "funding coin of %d atoms is too small for a two-transaction issuance (needs > %d)", funding.sats, s.cfg.FeeSats*3)
+		httpErr(w, feeStatus(err), "%v", err)
 		return
 	}
 	vContract, err := canonicalJSON(verifierContract(req.Name, req.Ticker))
@@ -509,7 +501,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	walletSpk := mustHexBytes(walletInfo.ScriptPubKey)
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	feeAssetID := elements.MustHex32(funding.asset)
 
 	// V's issuance is fully transparent. There is no confidential option here on
 	// purpose: the covenant must read explicit asset ids on the outputs it scans,
@@ -532,9 +524,9 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 			Nonce: elements.NullNonce(), ScriptPubKey: walletSpk},
 		&elements.TxOut{Asset: elements.ExplicitAssetInternal(vTokenID), Value: elements.ExplicitValue(1_0000_0000),
 			Nonce: elements.NullNonce(), ScriptPubKey: walletSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.sats - s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.sats - funding.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: walletSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(funding.fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	vSigned, err := s.wallet.SignRawTransactionWithWallet(hex.EncodeToString(vTx.Serialize()))
@@ -569,7 +561,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 	// asset id phase 1 commits to is the asset id phase 2 produces.
 	vTxid := vTx.TxID()
 	const aFundingVout = uint32(2)
-	aFundingSats := funding.sats - s.cfg.FeeSats
+	aFundingSats := funding.sats - funding.fee
 	entropy, assetID, tokenID := fastmerkle.DeriveIssuanceIDs(internalHash(vTxid), aFundingVout, digest)
 	assetDisplay := displayHash(assetID)
 
@@ -635,7 +627,7 @@ func (s *Server) handleDampIssuePrepare(w http.ResponseWriter, r *http.Request) 
 		PolicyPub: hex.EncodeToString(policyX[:]), PolicyRef: policyRef,
 		Contract: contract, ContractHash: displayHash(digest),
 		AssetID: assetDisplay, Entropy: displayHash(entropy), Token: displayHash(tokenID),
-		FundingTxid: vTxid, FundingVout: aFundingVout, FundingSats: aFundingSats,
+		FundingTxid: vTxid, FundingVout: aFundingVout, FundingSats: aFundingSats, FundingAsset: funding.asset,
 		Pi: piHex, Snapshot: snapCanonical,
 		SnapshotHash: hex.EncodeToString(snapHash[:]), SnapshotSigMsg: hex.EncodeToString(sigMsg[:]),
 		Created: time.Now(),
@@ -865,7 +857,22 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	feeAssetID := elements.MustHex32(s.cfg.FeeAsset)
+	// The fee is paid out of the funding coin, so in its asset; that asset must
+	// still be one the node accepts for fees.
+	if p.FundingAsset == "" {
+		httpErr(w, 409, "the prepared issuance does not name its funding coin's asset; POST /v1/issuer/damp-assets again")
+		return
+	}
+	fee, err := s.feeIn(p.FundingAsset)
+	if err != nil {
+		httpErr(w, feeStatus(err), "%v", err)
+		return
+	}
+	if p.FundingSats <= fee {
+		httpErr(w, 503, "the prepared funding coin of %d atoms cannot pay a fee of %d atoms of %s at the node's rate now; POST /v1/issuer/damp-assets again", p.FundingSats, fee, p.FundingAsset)
+		return
+	}
+	feeAssetID := elements.MustHex32(p.FundingAsset)
 	assetID := internalHash(p.AssetID)
 	tokenID := internalHash(p.Token)
 	vAssetID := elements.MustHex32(p.VerifierAsset)
@@ -911,9 +918,9 @@ func (s *Server) handleDampIssueComplete(w http.ResponseWriter, r *http.Request)
 			Nonce: elements.NullNonce(), ScriptPubKey: verifierCov.ScriptPubKey()},
 		&elements.TxOut{Asset: elements.ExplicitAsset(elements.MustHex32(p.VerifierToken)), Value: elements.ExplicitValue(1_0000_0000),
 			Nonce: elements.NullNonce(), ScriptPubKey: vTokenSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(p.FundingSats - s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(p.FundingSats - fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: changeSpk},
-		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(s.cfg.FeeSats),
+		&elements.TxOut{Asset: elements.ExplicitAsset(feeAssetID), Value: elements.ExplicitValue(fee),
 			Nonce: elements.NullNonce(), ScriptPubKey: nil},
 	)
 	signed, err := s.wallet.SignRawTransactionWithWallet(hex.EncodeToString(tx.Serialize()))
