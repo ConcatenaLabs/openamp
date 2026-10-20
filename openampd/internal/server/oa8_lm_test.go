@@ -167,6 +167,7 @@ func newIssueServer(t *testing.T) (*Server, *store.Store, *issueNode) {
 	for i := range s.genesis {
 		s.genesis[i] = byte(i + 1)
 	}
+	withFakeCapTool(s)
 	return s, st, node
 }
 
@@ -182,10 +183,9 @@ func callIssue(t *testing.T, s *Server, body map[string]any) (int, map[string]an
 }
 
 // TestOA8_TransparentIssuanceByteUnchanged proves the default (transparent) path
-// is untouched by OA-8: every output nonce is null, the token/fee-change outputs
-// go to the ordinary wallet address, and NO per-call blinded address and NO
-// blinding RPC are used. This is the byte-identity guarantee for BONDX and every
-// pre-OA-8 asset.
+// stays explicit: every output nonce is null, the token goes to the asset's
+// supply cap and the fee change to the ordinary wallet address, and NO per-call
+// blinded address and NO blinding RPC are used.
 func TestOA8_TransparentIssuanceByteUnchanged(t *testing.T) {
 	s, st, node := newIssueServer(t)
 	holder := regUser(t, st, nil)
@@ -221,9 +221,10 @@ func TestOA8_TransparentIssuanceByteUnchanged(t *testing.T) {
 			t.Fatalf("output %d has a non-null nonce %x on a transparent issuance", i, o.Nonce)
 		}
 	}
-	// Token (out 1) and fee-change (out 2) go to the ordinary wallet address.
-	if hex.EncodeToString(tx.Out[1].ScriptPubKey) != node.defaultSpk {
-		t.Fatalf("token output spk = %x, want the ordinary wallet spk", tx.Out[1].ScriptPubKey)
+	// The token (out 1) goes to the supply cap, never the wallet; the fee
+	// change (out 2) to the ordinary wallet address.
+	if hex.EncodeToString(tx.Out[1].ScriptPubKey) == node.defaultSpk || tx.Out[1].ScriptPubKey[0] != 0x51 {
+		t.Fatalf("token output spk = %x, want the supply cap's taproot script", tx.Out[1].ScriptPubKey)
 	}
 	if hex.EncodeToString(tx.Out[2].ScriptPubKey) != node.defaultSpk {
 		t.Fatalf("fee-change output spk = %x, want the ordinary wallet spk", tx.Out[2].ScriptPubKey)
@@ -236,9 +237,9 @@ func TestOA8_TransparentIssuanceByteUnchanged(t *testing.T) {
 
 // TestOA8_ConfidentialIssuanceOnUnblindedWallet proves a confidential asset
 // issues to a blech32 (blinded) enclave output on a -blindedaddresses=0-style
-// wallet: the enclave output blinds to the holder's key and the token/fee-change
-// outputs blind to per-call blech32 addresses, none of which the node flag
-// provides. The default address here has no confidential_key, so success can
+// wallet: the enclave output blinds to the holder's key and the fee-change
+// output blinds to a per-call blech32 address, which the node flag does not
+// provide; the token pays the supply cap explicitly. The default address here has no confidential_key, so success can
 // only come from the per-call blech32 path.
 func TestOA8_ConfidentialIssuanceOnUnblindedWallet(t *testing.T) {
 	s, st, node := newIssueServer(t)
@@ -303,9 +304,10 @@ func TestOA8_ConfidentialIssuanceOnUnblindedWallet(t *testing.T) {
 	if !isBlindingNonce(tx.Out[0].Nonce) {
 		t.Fatalf("enclave output is not blinded (nonce %x): expected a confidential enclave output", tx.Out[0].Nonce)
 	}
-	// The token (out 1) and fee-change (out 2) are blinded to per-call addresses.
-	if !isBlindingNonce(tx.Out[1].Nonce) {
-		t.Fatalf("token output must be blinded, nonce %x", tx.Out[1].Nonce)
+	// The token (out 1) pays the supply cap explicitly; the fee change (out 2)
+	// is blinded to a per-call address.
+	if len(tx.Out[1].Nonce) != 1 || tx.Out[1].Nonce[0] != 0 {
+		t.Fatalf("token output must stay explicit for the supply cap, nonce %x", tx.Out[1].Nonce)
 	}
 	if !isBlindingNonce(tx.Out[2].Nonce) {
 		t.Fatalf("fee-change output must be blinded, nonce %x", tx.Out[2].Nonce)

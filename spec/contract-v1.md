@@ -72,7 +72,7 @@ Witness stack for either leaf, bottom to top: `<policy signature> <user-or-issue
 
 When a transfer is blinded, the enclave output additionally carries a blinding public key in its nonce, and its amount and asset are committed rather than explicit; the taproot scriptPubKey (and hence the script tree) is identical.
 
-Issuance mints directly into enclave outputs. The reissuance token is issuer-held and outside the enclave; issuer tooling must keep custody of it and mint only into enclave outputs.
+Issuance mints directly into enclave outputs. The reissuance token is outside the enclave, in a supply-cap covenant ([sequentia-contracts](https://github.com/ConcatenaLabs/sequentia-contracts) `templates/supply_cap`) that the issuance pays it into: every later mint goes through the covenant, counted against a cap fixed at issuance. The contract does not record the cap; the issuance transaction shows the token paid to the covenant's address, from which anyone derives the cap.
 
 ## 5. Rule 1 (fees)
 

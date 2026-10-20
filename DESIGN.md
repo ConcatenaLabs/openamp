@@ -134,6 +134,8 @@ A Go daemon, deployed like our other services. Modules:
 - **Transparency log**: every decision (co-sign granted/refused, freeze, clawback, registration change) appends to a hash-chained log; the head is committed on-chain in an `OP_RETURN` periodically. Regulators and issuers can replay and verify the server never rewrote history.
 - **APIs** (REST, token/mTLS): issuer surface (users, categories, assets, assignments, distributions, freezes, clawback, reports) and wallet surface (register account, get enclave receive address for an AID, request co-sign, query policy and own limits).
 
+**Supply cap.** The server holds no reissuance token. Each asset's token goes, in its issuance transaction, into a supply-cap covenant (sequentia-contracts' `templates/supply_cap`): the server's operator key mints only while the total minted through it stays at or under a cap fixed at issuance, and a cold key held off the server can move it to new keys. No path takes the token out or raises the cap, so the asset's maximum supply is its first issuance plus the cap, whatever key is stolen. The covenant is a Simplicity program a Go daemon cannot compile; the `token-covenants` tool derives its addresses and builds its spends, and the daemon signs the fee coin with its wallet. A mint's amount is public on the covenant's own issuance, so a mint is never blinded.
+
 Freeze: user-freeze and UTXO-freeze are server-side refusals; global asset freeze halts co-signing. Clawback is a deliberately heavyweight ceremony (dual authorization, transparency-log entry with reason code before signing, spend via `L_claw` into a designated issuer enclave address). Distributions: ownership snapshot at an anchor-confirmed height, then batch payments of an ordinary asset to holders, reconciled against entitlement, vesting-aware.
 
 ---
@@ -186,4 +188,4 @@ Against a real node on regtest, in the node repository's `test/functional/`:
 - `feature_openamp_daemon.py`: a real `openampd` through registration, per-asset policy, co-signing, hosted issuance, fee conversion, freeze, velocity, holder caps, clawback, ownership reports and the anchored transparency log.
 - `feature_openamp_confidential.py`: opt-in confidential transfers end to end (blech32 enclave addresses, watch-wallet blinding keys, blinded co-signing).
 
-In this repository, `go test ./...` covers the policy engine, the Elements primitives against golden vectors, and the FROST 2-of-3 backend (distributed key generation and signing). OpenAMP needs no change to the chain.
+In this repository, `e2e/supply_cap.py` drives a real `openampd` and a regtest node through issuance into a supply cap, mints up to the cap, a mint one atom over refused in a block, and a mint the server wallet tries alone refused; `go test ./...` covers the policy engine, the Elements primitives against golden vectors, and the FROST 2-of-3 backend (distributed key generation and signing). OpenAMP needs no change to the chain.

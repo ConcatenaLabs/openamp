@@ -31,7 +31,9 @@
 //	POST /v1/issuer/clawback            claw back a holder's UTXOs (legacy: signs+broadcasts; external issuer: builds the L_claw sweep)
 //	POST /v1/issuer/clawback/{id}/complete  submit the external issuer's signatures -> broadcast
 //	POST /v1/issuer/burn                build a redeem burn (OA-5), holder-signed
-//	POST /v1/issuer/reissue             reissue more into a target enclave (OA-6)
+//	POST /v1/issuer/reissue             mint more into a target enclave, through the asset's supply cap
+//	POST /v1/issuer/supply-cap          move an issued asset's reissuance token into a supply cap
+//	POST /v1/issuer/supply-cap/rekey    record a rekey of an asset's supply cap by its cold key
 //	POST /v1/issuer/snapshots           publish a signed OpenDAMP policy snapshot
 //	GET  /v1/issuer/holders             ownership report
 //	POST /v1/issuer/anchor              anchor the transparency log on-chain
@@ -72,6 +74,19 @@ type Config struct {
 	// endpoint answers 501. A CMR is a program identity, so this is deliberately
 	// a file the operator controls rather than a compiled-in constant.
 	DampRegistry string
+	// TokenTool is the path to sequentia-contracts' token-covenants tool, which
+	// derives and spends the supply cap every reissuance token is held in.
+	// Empty: no asset can be issued or minted here (supplycap.go).
+	TokenTool string
+	// CovenantTool, when set, runs in place of the binary at TokenTool (tests).
+	CovenantTool CovenantTool
+	// CapOperatorKeyFile holds this server's operator key for supply caps, a
+	// raw secret key in hex made on first use (default <datadir>/cap-operator.key).
+	CapOperatorKeyFile string
+	// CapColdKey is the default cold key of a new supply cap: an x-only key
+	// held off this server, which can replace the operator key. An issuance
+	// may name its own.
+	CapColdKey string
 }
 
 type Server struct {
@@ -97,6 +112,11 @@ type Server struct {
 	consolidateMu sync.Mutex
 
 	genesis [32]byte // internal order
+
+	// tool runs token-covenants; nil when supply caps are not configured.
+	tool               CovenantTool
+	capOperatorKey     string // x-only hex of the key in capOperatorKeyFile
+	capOperatorKeyFile string
 }
 
 // pendingTTL bounds how long a hosted-transfer build waits for the caller's
@@ -136,6 +156,24 @@ func New(cfg Config, st *store.Store, node, wallet *rpc.Client) (*Server, error)
 			return nil, err
 		}
 		s.dampReg = reg
+	}
+	if cfg.TokenTool != "" || cfg.CovenantTool != nil {
+		s.tool = cfg.CovenantTool
+		if s.tool == nil {
+			s.tool = execTool{path: cfg.TokenTool}
+		}
+		s.capOperatorKeyFile = cfg.CapOperatorKeyFile
+		if s.capOperatorKeyFile == "" {
+			s.capOperatorKeyFile = capOperatorKeyPath(st.Dir())
+		}
+		key, err := ensureCapOperatorKey(s.capOperatorKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("supply-cap operator key: %w", err)
+		}
+		s.capOperatorKey = key
+		if strings.EqualFold(cfg.CapColdKey, key) {
+			return nil, fmt.Errorf("-capcoldkey is this server's own supply-cap operator key: the cold key must be one this server does not hold")
+		}
 	}
 	gh, err := node.GetBlockHash(0)
 	if err != nil {
@@ -186,6 +224,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/issuer/clawback/{id}/complete", s.issuerAuth(s.handleClawbackComplete))
 	mux.HandleFunc("POST /v1/issuer/burn", s.issuerAuth(s.handleBurnBuild))
 	mux.HandleFunc("POST /v1/issuer/reissue", s.issuerAuth(s.handleReissue))
+	mux.HandleFunc("POST /v1/issuer/supply-cap", s.issuerAuth(s.handleSupplyCapMove))
+	mux.HandleFunc("POST /v1/issuer/supply-cap/rekey", s.issuerAuth(s.handleSupplyCapRekey))
 	mux.HandleFunc("POST /v1/issuer/snapshots", s.issuerAuth(s.handleSnapshotPost))
 	mux.HandleFunc("GET /v1/issuer/holders", s.issuerAuth(s.handleHolders))
 	mux.HandleFunc("POST /v1/issuer/anchor", s.issuerAuth(s.handleAnchor))
@@ -329,7 +369,24 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, "unknown asset")
 		return
 	}
-	httpJSON(w, asset)
+	if asset.SupplyCap == nil {
+		httpJSON(w, asset)
+		return
+	}
+	// The record, with the supply cap shown as the supply read shows it (room
+	// left, whether its coin holds the whole token) rather than as stored.
+	b, err := json.Marshal(asset)
+	if err != nil {
+		httpErr(w, 500, "%v", err)
+		return
+	}
+	var view map[string]any
+	if err := json.Unmarshal(b, &view); err != nil {
+		httpErr(w, 500, "%v", err)
+		return
+	}
+	view["supply_cap"] = supplyCapView(asset.SupplyCap)
+	httpJSON(w, view)
 }
 
 func (s *Server) handleAddress(w http.ResponseWriter, r *http.Request) {

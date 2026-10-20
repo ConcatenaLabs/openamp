@@ -205,6 +205,7 @@ func newDampServer(t *testing.T, v dampVec) (*Server, *store.Store, *dampNode) {
 	for i := range s.genesis {
 		s.genesis[i] = byte(i + 1)
 	}
+	withFakeCapTool(s)
 	return s, st, node
 }
 
@@ -370,6 +371,19 @@ func TestDamp_FullIssuance(t *testing.T) {
 	}
 	if hex.EncodeToString(fee.Asset) == hex.EncodeToString(elements.ExplicitAsset(elements.MustHex32(assetID))) {
 		t.Fatal("the fee output carries the restricted asset")
+	}
+	// A's reissuance token pays its supply cap explicitly, never the wallet.
+	var capRec *store.SupplyCap
+	st.View(func(state *store.State) {
+		if a := state.Assets[assetID]; a != nil {
+			capRec = a.SupplyCap
+		}
+	})
+	if capRec == nil || capRec.Cap != 0 || capRec.CoinVout != 1 {
+		t.Fatalf("A's supply cap not recorded with no headroom at vout 1: %+v", capRec)
+	}
+	if got := hex.EncodeToString(tx.Out[1].ScriptPubKey); got != capRec.ScriptPubKey || len(tx.Out[1].Nonce) != 1 {
+		t.Fatalf("A's token output pays %s, not its supply cap %s", got, capRec.ScriptPubKey)
 	}
 	// Input 1 spends the verifier issuance's V output.
 	if len(tx.In) != 2 {

@@ -32,6 +32,9 @@ func main() {
 		electrsURL  = flag.String("electrs", envOr("OPENAMPD_ELECTRS_URL", "http://127.0.0.1:3003"), "explorer (electrs) base URL; prevout fallback when the node lacks -txindex")
 		dampReg     = flag.String("dampregistry", os.Getenv("OPENAMPD_DAMP_REGISTRY"), "path to the OpenDAMP CMR pinning file (`opendamp registry` output, or vectors/addresses.json in the opendamp repository); unset disables network enforcement")
 		follow      = flag.Duration("follow", 2*time.Second, "chain follower poll interval")
+		tokenTool   = flag.String("tokentool", os.Getenv("OPENAMPD_TOKEN_TOOL"), "path to sequentia-contracts' token-covenants tool, which builds the supply cap every reissuance token is held in; unset, nothing can be issued or minted")
+		capColdKey  = flag.String("capcoldkey", os.Getenv("OPENAMPD_CAP_COLD_KEY"), "default cold key (x-only hex) of a new supply cap: the key, kept off this server, that can replace its operator key")
+		capOpKey    = flag.String("capoperatorkey", "", "this server's supply-cap operator key file (default <datadir>/cap-operator.key, made on first start)")
 	)
 	flag.Parse()
 
@@ -80,6 +83,7 @@ func main() {
 		Listen: *listen, IssuerToken: *issuerToken,
 		FeeAsset: *feeAsset, FeeSats: *feeSats, DemoIssuer: *demoIssuer,
 		ElectrsURL: *electrsURL, Signer: *signerName, DampRegistry: *dampReg,
+		TokenTool: *tokenTool, CapOperatorKeyFile: *capOpKey, CapColdKey: *capColdKey,
 	}, st, node, wallet)
 	if err != nil {
 		log.Fatal(err)
@@ -89,6 +93,11 @@ func main() {
 	defer cancel()
 	go srv.RunFollower(ctx, *follow)
 
+	if *tokenTool != "" {
+		log.Printf("supply caps through %s", *tokenTool)
+	} else {
+		log.Printf("supply caps not configured (-tokentool): issuance and minting are refused")
+	}
 	if *dampReg != "" {
 		log.Printf("network enforcement configured from %s", *dampReg)
 	}
