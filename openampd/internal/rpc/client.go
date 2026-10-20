@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -256,6 +257,13 @@ type ScanUnspent struct {
 	Height       int64   `json:"height"`
 }
 
+// ScanTxOutSet returns the unspent outputs paying any of spks.
+//
+// The node runs one scantxoutset at a time and refuses a second with "Scan
+// already in progress" instead of queueing it. Scans from this process are
+// therefore serialised per node (a wallet asks for the balance of every
+// restricted asset at once), and a scan started by another client of the same
+// node is waited out for up to scanBusyWait.
 func (c *Client) ScanTxOutSet(spks []string) ([]ScanUnspent, error) {
 	descs := make([]string, len(spks))
 	for i, s := range spks {
@@ -265,8 +273,21 @@ func (c *Client) ScanTxOutSet(spks []string) ([]ScanUnspent, error) {
 		Success  bool          `json:"success"`
 		Unspents []ScanUnspent `json:"unspents"`
 	}
-	if err := c.Call(&res, "scantxoutset", "start", descs); err != nil {
-		return nil, err
+	mu := scanLock(c.nodeURL())
+	mu.Lock()
+	defer mu.Unlock()
+	deadline := time.Now().Add(scanBusyWait)
+	pause := 50 * time.Millisecond
+	for {
+		err := c.Call(&res, "scantxoutset", "start", descs)
+		if err == nil {
+			break
+		}
+		if !IsRPCError(err, "Scan already in progress") || time.Now().Add(pause).After(deadline) {
+			return nil, err
+		}
+		time.Sleep(pause)
+		pause = min(2*pause, time.Second)
 	}
 	if !res.Success {
 		return nil, fmt.Errorf("scantxoutset failed")
@@ -274,16 +295,34 @@ func (c *Client) ScanTxOutSet(spks []string) ([]ScanUnspent, error) {
 	return res.Unspents, nil
 }
 
+// scanBusyWait bounds how long ScanTxOutSet waits for a scan that another
+// client of the node is running.
+var scanBusyWait = 30 * time.Second
+
+// scanLocks holds one mutex per node URL: the node allows a single scan, and
+// the clients for its wallets share it.
+var scanLocks sync.Map
+
+func scanLock(node string) *sync.Mutex {
+	mu, _ := scanLocks.LoadOrStore(node, new(sync.Mutex))
+	return mu.(*sync.Mutex)
+}
+
+// nodeURL is this client's URL without any wallet path.
+func (c *Client) nodeURL() string {
+	base := strings.TrimSuffix(c.url, "/")
+	if i := strings.Index(base, "/wallet/"); i >= 0 {
+		base = base[:i]
+	}
+	return base
+}
+
 // --- confidential-transaction helpers -------------------------------------
 
 // WalletURL returns this client's base URL with a wallet path appended, for
 // constructing a wallet-scoped client (e.g. the blinding watch wallet).
 func (c *Client) WalletURL(name string) string {
-	base := strings.TrimSuffix(c.url, "/")
-	if i := strings.Index(base, "/wallet/"); i >= 0 {
-		base = base[:i]
-	}
-	return base + "/wallet/" + name
+	return c.nodeURL() + "/wallet/" + name
 }
 
 func (c *Client) Auth() string { return c.user + ":" + c.pass }

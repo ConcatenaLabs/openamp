@@ -302,6 +302,8 @@ The same flow, driven programmatically against a regtest node, is the committed 
 - chain queries: `getblockcount`, `getblockhash`, `getblock` (follower), `gettxout` (prevout resolution), `scantxoutset` (enclave balances and holder reports), `decodescript` (address rendering), `dumpassetlabels` (fee-asset default);
 - wallet operations: `listunspent`, `getnewaddress`, `getaddressinfo`, `signrawtransactionwithwallet`, `sendrawtransaction`, and `createrawtransaction` + `fundrawtransaction` for log anchors.
 
+The node runs one `scantxoutset` at a time, so openampd queues its own scans (a wallet that reads every restricted balance at once gets each answer in turn) and waits up to 30 seconds for a scan that another program started on the same node, answering 502 only if that scan is still running.
+
 Enclave transactions are built by openampd's own minimal Elements codec (`openampd/internal/elements`): explicit assets and values end to end, Elements taproot with the `/elements` tagged hashes and leaf version `0xc4`, and the Elements taproot sighash. Byte-exactness is enforced by golden vectors generated from the node repository's functional-test framework. Issuance entropy and asset/token IDs are derived in `openampd/internal/fastmerkle` (the Elements two-leaf fast merkle root).
 
 The node pays and accepts fees per Sequentia's open fee market: openampd attaches its fees in one configurable ordinary asset (`-feeasset`, defaulting to the chain's policy asset), which must be on the producers' accepted-fee-asset whitelist.
