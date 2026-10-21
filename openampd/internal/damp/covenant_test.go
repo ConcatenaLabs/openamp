@@ -1,11 +1,11 @@
 package damp
 
 import (
-	"strings"
 	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -164,5 +164,77 @@ func TestLoadProgramRegistryRefusesAPreMenuFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "verifier_shapes") {
 		t.Fatalf("the error must name what is missing: %v", err)
+	}
+}
+
+// The contract-list commitment and the pi of a policy that lists the guarded
+// order are opendamp's: its vectors/contracts.json, pinned here as
+// testdata/opendamp-contracts.json, is the same example policy as
+// opendamp-addresses.json with the template listed.
+func TestContractsCommitmentAndPiMatchOpendamp(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "opendamp-contracts.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		AssetInternalBytes string `json:"asset_internal_bytes"`
+		Policy             struct {
+			Seq                 uint64 `json:"seq"`
+			WhitelistRoot       string `json:"whitelist_root"`
+			BlacklistRoot       string `json:"blacklist_root"`
+			TransferLimit       uint64 `json:"transfer_limit"`
+			Pi                  string `json:"pi"`
+			ContractsCommitment string `json:"contracts_commitment"`
+			Contracts           []struct {
+				TemplateHash string `json:"template_hash"`
+				Name         string `json:"name"`
+				CMR          string `json:"cmr"`
+			} `json:"contracts"`
+		} `json:"policy"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Policy.Contracts) != 1 {
+		t.Fatalf("the example lists one template, got %d", len(v.Policy.Contracts))
+	}
+	c := v.Policy.Contracts[0]
+	tmpl, ok := LookupContractTemplate(c.TemplateHash)
+	if !ok || tmpl.Name != c.Name || hex.EncodeToString(tmpl.CMR[:]) != c.CMR {
+		t.Fatalf("the pinned template table disagrees with opendamp's: %+v vs %+v", tmpl, c)
+	}
+	if byName, ok := LookupContractTemplate(c.Name); !ok || byName != tmpl {
+		t.Fatal("a template is found by its name too")
+	}
+	got, err := ContractsRoot([]string{c.TemplateHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(got[:]) != v.Policy.ContractsCommitment {
+		t.Fatalf("contracts commitment = %x, want %s", *got, v.Policy.ContractsCommitment)
+	}
+	wl, bl := mustHex32(v.Policy.WhitelistRoot), mustHex32(v.Policy.BlacklistRoot)
+	pi := PiCovenant(mustHex32(v.AssetInternalBytes), v.Policy.Seq, RulesRootCovenant(&bl, &wl, v.Policy.TransferLimit, got))
+	if hex.EncodeToString(pi[:]) != v.Policy.Pi {
+		t.Fatalf("pi = %x, want %s", pi, v.Policy.Pi)
+	}
+	// And with the slot empty, the same policy is the unlisted one, pi and all.
+	none, err := ContractsRoot(nil)
+	if err != nil || none != nil {
+		t.Fatalf("an empty list commits nothing: %v %v", none, err)
+	}
+}
+
+func TestContractsRootRefusals(t *testing.T) {
+	h := hex.EncodeToString(Whitelistable[0].TemplateHash[:])
+	for name, list := range map[string][]string{
+		"unknown":    {strings.Repeat("42", 32)},
+		"repeat":     {h, h},
+		"upper case": {strings.ToUpper(h)},
+		"short":      {h[:10]},
+	} {
+		if _, err := ContractsRoot(list); err == nil {
+			t.Fatalf("%s: a list %v must be refused", name, list)
+		}
 	}
 }

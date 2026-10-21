@@ -126,6 +126,16 @@ type dampPolicyRequest struct {
 	AddBlacklist    []dampOutpointRef `json:"add_blacklist,omitempty"`
 	RemoveBlacklist []dampOutpointRef `json:"remove_blacklist,omitempty"`
 
+	// AddContracts lists contract templates the asset may enter, and
+	// RemoveContracts takes them off the list, each by template name or template
+	// hash (damp.Whitelistable). Listing one lets a whitelisted holder move the
+	// asset into an instance they own, and lets anyone fill it for a whitelisted
+	// recipient. Taking one off the list freezes the asset already held in its
+	// instances, as removing a holder freezes that holder, until it is listed
+	// again.
+	AddContracts    []string `json:"add_contracts,omitempty"`
+	RemoveContracts []string `json:"remove_contracts,omitempty"`
+
 	// Reason is REQUIRED and goes into the public transparency log BEFORE
 	// anything is signed, exactly like a clawback. A freeze without a stated
 	// reason is not a freeze this server will help build.
@@ -206,6 +216,7 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 		httpErr(w, 500, "the updated policy is not self-consistent: %v", err)
 		return
 	}
+	contracts := next.Predicates.Contracts
 	canonical, err := next.CanonicalJSON()
 	if err != nil {
 		httpErr(w, 500, "%v", err)
@@ -243,6 +254,8 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 		"removed_holders":   change.removedHolders,
 		"added_outpoints":   change.addedOutpoints,
 		"removed_outpoints": change.removedOutpoints,
+		"added_contracts":   change.addedContracts,
+		"removed_contracts": change.removedContracts,
 	})
 
 	pending := &store.PendingDampPolicy{
@@ -252,12 +265,13 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 		WhitelistRoot: hex.EncodeToString(wlRoot[:]), BlacklistRoot: hex.EncodeToString(blRoot[:]),
 		AddedHolders: change.addedHolders, RemovedHolders: change.removedHolders,
 		AddedOutpoints: change.addedOutpoints, RemovedOutpoints: change.removedOutpoints,
+		Contracts: contracts, AddedContracts: change.addedContracts, RemovedContracts: change.removedContracts,
 		VerifierAsset: asset.Damp.VerifierAsset, VerifierAmount: asset.Damp.VerifierAmount,
 		VerifierTxid: outTxid, VerifierVout: outVout,
 		VerifierSPKPrev: asset.Damp.VerifierSPK, VerifierCMRPrev: asset.Damp.VerifierCMR,
 		VerifierCMRsPrev: asset.Damp.VerifierCMRs,
-		IssuerUpdateKey: asset.Damp.IssuerUpdateKey,
-		Snapshot:        canonical, SnapshotHash: hex.EncodeToString(snapHash[:]),
+		IssuerUpdateKey:  asset.Damp.IssuerUpdateKey,
+		Snapshot:         canonical, SnapshotHash: hex.EncodeToString(snapHash[:]),
 		SnapshotSigMsg: hex.EncodeToString(sigMsg[:]), Created: time.Now(),
 	}
 	s.st.GCPendingDampPolicies(dampPolicyPrepareTTL)
@@ -281,23 +295,26 @@ func (s *Server) handleDampPolicyPrepare(w http.ResponseWriter, r *http.Request)
 		"whitelist_root": pending.WhitelistRoot,
 		"blacklist":      next.Predicates.Blacklist.Entries,
 		"blacklist_root": pending.BlacklistRoot,
+		"contracts":      contractDocs(contracts),
 		"change": map[string]any{
 			"added_holders":     change.addedHolders,
 			"removed_holders":   change.removedHolders,
 			"added_outpoints":   change.addedOutpoints,
 			"removed_outpoints": change.removedOutpoints,
+			"added_contracts":   change.addedContracts,
+			"removed_contracts": change.removedContracts,
 		},
-		"snapshot":             json.RawMessage(canonical),
-		"snapshot_hash":        pending.SnapshotHash,
-		"to_sign":              pending.SnapshotSigMsg,
-		"sign_with":            "issuer_update_key",
-		"issuer_update_key":    asset.Damp.IssuerUpdateKey,
-		"verifier_outpoint":    map[string]any{"txid": outTxid, "vout": outVout},
-		"verifier_asset":       asset.Damp.VerifierAsset,
-		"verifier_amount":      asset.Damp.VerifierAmount,
+		"snapshot":              json.RawMessage(canonical),
+		"snapshot_hash":         pending.SnapshotHash,
+		"to_sign":               pending.SnapshotSigMsg,
+		"sign_with":             "issuer_update_key",
+		"issuer_update_key":     asset.Damp.IssuerUpdateKey,
+		"verifier_outpoint":     map[string]any{"txid": outTxid, "vout": outVout},
+		"verifier_asset":        asset.Damp.VerifierAsset,
+		"verifier_amount":       asset.Damp.VerifierAmount,
 		"verifier_cmr_current":  asset.Damp.VerifierCMR,
 		"verifier_cmrs_current": asset.Damp.VerifierCMRs,
-		"verifier_spk_current": asset.Damp.VerifierSPK,
+		"verifier_spk_current":  asset.Damp.VerifierSPK,
 		"verifier_cmr_next_hint": "the verifier program is parameterized by the policy commitment, so pi_next needs a NEW verifier_cmr. " +
 			"Run `opendamp derive` against derive_snapshot and post its p_cmr; a verifier_cmr equal to verifier_cmr_current is refused, " +
 			"because it would recreate the old policy.",
@@ -369,7 +386,7 @@ func (s *Server) handleDampPolicyComplete(w http.ResponseWriter, r *http.Request
 	// own record no longer implies the pi it prepared. Same discipline as
 	// issuance: the authority split only works if the policy half is re-derived
 	// rather than trusted.
-	if _, _, pi, err := dampRootsFrom(p.AssetID, p.Seq, p.Whitelist, p.Blacklist, snap.Predicates.Limit); err != nil {
+	if _, _, pi, err := dampRootsFrom(p.AssetID, p.Seq, p.Whitelist, p.Blacklist, snap.Predicates.Limit, p.Contracts); err != nil {
 		httpErr(w, 500, "%v", err)
 		return
 	} else if got := hex.EncodeToString(pi[:]); got != p.Pi {
@@ -514,6 +531,7 @@ func (s *Server) handleDampPolicyComplete(w http.ResponseWriter, r *http.Request
 		"seq": p.Seq, "pi": p.Pi, "prev_pi": p.PrevPi,
 		"whitelist": p.Whitelist, "whitelist_root": p.WhitelistRoot,
 		"blacklist": p.Blacklist, "blacklist_root": p.BlacklistRoot,
+		"contracts":                 contractDocs(p.Contracts),
 		"verifier_covenant_spk":     verifierSpkHex,
 		"verifier_covenant_address": s.addressOfSPK(verifierCov.ScriptPubKey()),
 		"snapshot_published":        published,
@@ -553,11 +571,29 @@ type policyChange struct {
 	reboundHolders   []string
 	addedOutpoints   []string
 	removedOutpoints []string
+	addedContracts   []string // template names
+	removedContracts []string
 }
 
 func (c *policyChange) empty() bool {
 	return len(c.addedHolders) == 0 && len(c.removedHolders) == 0 && len(c.reboundHolders) == 0 &&
-		len(c.addedOutpoints) == 0 && len(c.removedOutpoints) == 0
+		len(c.addedOutpoints) == 0 && len(c.removedOutpoints) == 0 &&
+		len(c.addedContracts) == 0 && len(c.removedContracts) == 0
+}
+
+// contractDocs names each listed template, for a reader who does not carry the
+// table of template hashes.
+func contractDocs(list []string) []map[string]string {
+	out := make([]map[string]string, 0, len(list))
+	for _, h := range list {
+		d := map[string]string{"template_hash": h}
+		if t, ok := damp.LookupContractTemplate(h); ok {
+			d["name"] = t.Name
+			d["cmr"] = hex.EncodeToString(t.CMR[:])
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // applyPolicyDelta returns the NEXT snapshot with the requested change applied to
@@ -663,6 +699,43 @@ func applyPolicyDelta(cur *damp.Snapshot, req *dampPolicyRequest) (*damp.Snapsho
 		keptBL = append(keptBL, e)
 	}
 
+	listed := map[string]bool{}
+	for _, h := range cur.Predicates.Contracts {
+		listed[strings.ToLower(h)] = true
+	}
+	for _, raw := range req.AddContracts {
+		t, ok := damp.LookupContractTemplate(raw)
+		if !ok {
+			return nil, nil, fmt.Errorf("add_contracts: %q is not a contract template a policy can list; the network's verifier recognises only %s", raw, whitelistableNames())
+		}
+		h := hex.EncodeToString(t.TemplateHash[:])
+		if listed[h] {
+			return nil, nil, fmt.Errorf("%s is already on this asset's list of contracts", t.Name)
+		}
+		listed[h] = true
+		change.addedContracts = append(change.addedContracts, t.Name)
+	}
+	for _, raw := range req.RemoveContracts {
+		t, ok := damp.LookupContractTemplate(raw)
+		if !ok {
+			return nil, nil, fmt.Errorf("remove_contracts: %q is not a contract template a policy can list", raw)
+		}
+		h := hex.EncodeToString(t.TemplateHash[:])
+		if !listed[h] {
+			return nil, nil, fmt.Errorf("%s is not on this asset's list of contracts, so there is nothing to remove", t.Name)
+		}
+		delete(listed, h)
+		change.removedContracts = append(change.removedContracts, t.Name)
+	}
+	contracts := make([]string, 0, len(listed))
+	for h := range listed {
+		contracts = append(contracts, h)
+	}
+	sort.Strings(contracts)
+	if len(contracts) == 0 {
+		contracts = nil
+	}
+
 	if change.empty() {
 		return nil, nil, fmt.Errorf("this request changes nothing; a policy update that publishes the same policy would still cost a transaction and a sequence number")
 	}
@@ -682,14 +755,23 @@ func applyPolicyDelta(cur *damp.Snapshot, req *dampPolicyRequest) (*damp.Snapsho
 		Blacklist: damp.PredicateList{Entries: damp.KeyEntries(keptBL)},
 		Whitelist: damp.PredicateList{Entries: kept},
 		Limit:     cur.Predicates.Limit,
+		Contracts: contracts,
 	}
 	return &next, change, nil
+}
+
+func whitelistableNames() string {
+	names := make([]string, 0, len(damp.Whitelistable))
+	for _, t := range damp.Whitelistable {
+		names = append(names, t.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 // dampRoots recomputes the roots and pi a snapshot's contents imply and writes
 // the roots back into the document, so the returned snapshot is self-consistent.
 func dampRoots(assetID string, snap *damp.Snapshot) (wl, bl, pi [32]byte, err error) {
-	wl, bl, pi, err = dampRootsFrom(assetID, snap.Seq, snap.Predicates.Whitelist.Entries, snap.Predicates.Blacklist.Keys(), snap.Predicates.Limit)
+	wl, bl, pi, err = dampRootsFrom(assetID, snap.Seq, snap.Predicates.Whitelist.Entries, snap.Predicates.Blacklist.Keys(), snap.Predicates.Limit, snap.Predicates.Contracts)
 	if err != nil {
 		return
 	}
@@ -709,7 +791,7 @@ func dampRoots(assetID string, snap *damp.Snapshot) (wl, bl, pi [32]byte, err er
 // the leaf, so a keys-only root would publish a commitment that omits it, and
 // every transfer of the asset would then fail against the deployed program rather
 // than merely lose a restriction.
-func dampRootsFrom(assetID string, seq uint64, whitelist []damp.PredicateEntry, blacklist []string, limit *uint64) (wl, bl, pi [32]byte, err error) {
+func dampRootsFrom(assetID string, seq uint64, whitelist []damp.PredicateEntry, blacklist []string, limit *uint64, contracts []string) (wl, bl, pi [32]byte, err error) {
 	wlEntries := make([]damp.WhitelistEntry, 0, len(whitelist))
 	for i, e := range whitelist {
 		k, kerr := parseXOnly(fmt.Sprintf("whitelist[%d]", i), e.Key)
@@ -736,7 +818,11 @@ func dampRootsFrom(assetID string, seq uint64, whitelist []damp.PredicateEntry, 
 	if limit != nil {
 		lim = *limit
 	}
-	pi = damp.PiCovenant(internalHash(assetID), seq, damp.RulesRootCovenant(&bl, &wl, lim, nil))
+	con, cerr := damp.ContractsRoot(contracts)
+	if cerr != nil {
+		return wl, bl, pi, cerr
+	}
+	pi = damp.PiCovenant(internalHash(assetID), seq, damp.RulesRootCovenant(&bl, &wl, lim, con))
 	return
 }
 

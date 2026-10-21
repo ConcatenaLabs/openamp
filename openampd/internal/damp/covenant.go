@@ -1,12 +1,15 @@
 package damp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/ConcatenaLabs/openamp/openampd/internal/damp/dmt"
 )
@@ -157,11 +160,16 @@ func BlacklistRoot(outpointKeys [][32]byte) ([32]byte, error) {
 }
 
 // RulesRootCovenant is the fixed-order two-level Merkle root over the four
-// predicate commitments [blacklist, whitelist, limit, windows]; an absent
+// predicate commitments [blacklist, whitelist, limit, contracts]; an absent
 // predicate commits to 32 zero bytes. This is opendamp's src/policy.rs
 // rules_root, NOT the M2 snapshot RulesRoot (which serves the document format);
 // they are separate constructions on purpose and both are vector-pinned.
-func RulesRootCovenant(blacklist, whitelist *[32]byte, limit uint64, windows *[32]byte) [32]byte {
+//
+// contracts is ContractsCommitment of the policy's contract template list, or
+// nil for a policy that lists none. Nothing else commits in that slot (dmt-v1
+// refuses a class-keyed windows array), so a policy without contracts keeps
+// the pi it would have had if contracts did not exist.
+func RulesRootCovenant(blacklist, whitelist *[32]byte, limit uint64, contracts *[32]byte) [32]byte {
 	var zero [32]byte
 	pick := func(p *[32]byte) [32]byte {
 		if p == nil {
@@ -169,7 +177,7 @@ func RulesRootCovenant(blacklist, whitelist *[32]byte, limit uint64, windows *[3
 		}
 		return *p
 	}
-	cBl, cWl, cWin := pick(blacklist), pick(whitelist), pick(windows)
+	cBl, cWl, cWin := pick(blacklist), pick(whitelist), pick(contracts)
 	var cLim [32]byte
 	if limit != 0 {
 		binary.BigEndian.PutUint64(cLim[24:], limit)
@@ -192,4 +200,102 @@ func PiCovenant(assetInternal [32]byte, seq uint64, rulesRoot [32]byte) [32]byte
 	msg = append(msg, seqBE[:]...)
 	msg = append(msg, rulesRoot[:]...)
 	return taggedHash("OpenDAMP/policy/v1", msg)
+}
+
+// ContractTemplate is a contract template a policy can list, so that the asset
+// can enter its instances (opendamp's DESIGN.md section 2.4). The verifier
+// recognises an instance by rebuilding its script from the template's
+// commitment root; this server only lists and commits.
+type ContractTemplate struct {
+	// Name is the descriptor's template name.
+	Name string
+	// TemplateHash is the descriptor's template hash, which is how a policy
+	// lists the template.
+	TemplateHash [32]byte
+	// CMR is the template's one program root, in the descriptor's byte order.
+	CMR [32]byte
+}
+
+// TagContracts is the domain of the contract-list commitment.
+const TagContracts = "OpenDAMP/contracts/v1"
+
+// Whitelistable is every template a policy can list, mirroring opendamp's
+// contracts::WHITELISTABLE. A template joins only with a guard (every path
+// needs q of the asset's verifier asset at input 0) and an owner term, so that
+// the verifier is in every transaction that moves the contract's coin; a
+// listing naming anything else is refused, because the verifier would not let
+// the asset into it.
+var Whitelistable = []ContractTemplate{
+	{
+		Name:         "seqdex/guarded-order",
+		TemplateHash: mustHex32("d68cecbf19c501abc78987833bec226e4a081ef19e484c0b060d3033b4239f60"),
+		CMR:          mustHex32("c676964fbb78174782e24f18b5fb3fdd65a844d7317ca43b84547807461ca659"),
+	},
+}
+
+func mustHex32(s string) [32]byte {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 32 {
+		panic("damp: bad 32-byte constant " + s)
+	}
+	return [32]byte(b)
+}
+
+// LookupContractTemplate finds a whitelistable template by its name or its
+// template hash in hex.
+func LookupContractTemplate(nameOrHash string) (ContractTemplate, bool) {
+	k := strings.ToLower(strings.TrimSpace(nameOrHash))
+	for _, t := range Whitelistable {
+		if k == t.Name || k == hex.EncodeToString(t.TemplateHash[:]) {
+			return t, true
+		}
+	}
+	return ContractTemplate{}, false
+}
+
+// ContractsCommitment commits a policy's contract template list:
+// H_"OpenDAMP/contracts/v1"(hash_1 || ... || hash_n) over the template hashes
+// in ascending order. It is the fourth slot of RulesRootCovenant; a policy that
+// lists nothing passes nil there instead.
+func ContractsCommitment(hashes [][32]byte) [32]byte {
+	sorted := append([][32]byte(nil), hashes...)
+	sort.Slice(sorted, func(i, j int) bool { return bytes.Compare(sorted[i][:], sorted[j][:]) < 0 })
+	chunks := make([][]byte, 0, len(sorted))
+	for i := range sorted {
+		chunks = append(chunks, sorted[i][:])
+	}
+	return taggedHash(TagContracts, chunks...)
+}
+
+// ContractsRoot parses a snapshot's contract list, the hex template hashes in
+// ascending order with no repeat, each a whitelistable template, and returns
+// its commitment, or nil for an empty list.
+func ContractsRoot(list []string) (*[32]byte, error) {
+	if len(list) == 0 {
+		return nil, nil
+	}
+	hashes := make([][32]byte, 0, len(list))
+	for i, h := range list {
+		b, err := hex.DecodeString(h)
+		if err != nil || len(b) != 32 || h != strings.ToLower(h) {
+			return nil, fmt.Errorf("predicates.contracts[%d] must be a 32-byte lower-case hex template hash", i)
+		}
+		if _, ok := LookupContractTemplate(h); !ok {
+			return nil, fmt.Errorf("predicates.contracts[%d]: %s is not a template a policy can list (known: %s)", i, h, knownTemplates())
+		}
+		if i > 0 && list[i-1] >= h {
+			return nil, fmt.Errorf("predicates.contracts must be in ascending order with no repeat, so that a list has one encoding")
+		}
+		hashes = append(hashes, [32]byte(b))
+	}
+	c := ContractsCommitment(hashes)
+	return &c, nil
+}
+
+func knownTemplates() string {
+	names := make([]string, 0, len(Whitelistable))
+	for _, t := range Whitelistable {
+		names = append(names, t.Name+" "+hex.EncodeToString(t.TemplateHash[:]))
+	}
+	return strings.Join(names, ", ")
 }

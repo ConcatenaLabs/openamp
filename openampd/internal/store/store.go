@@ -535,6 +535,12 @@ type PendingDampPolicy struct {
 	RemovedHolders   []string `json:"removed_holders,omitempty"`
 	AddedOutpoints   []string `json:"added_outpoints,omitempty"`   // "txid:vout"
 	RemovedOutpoints []string `json:"removed_outpoints,omitempty"` // "txid:vout"
+	// Contracts is the next policy's contract template list, by template hash
+	// in ascending order; pi commits to it. Added/RemovedContracts name the
+	// templates the update lists and takes off.
+	Contracts        []string `json:"contracts,omitempty"`
+	AddedContracts   []string `json:"added_contracts,omitempty"`
+	RemovedContracts []string `json:"removed_contracts,omitempty"`
 
 	VerifierAsset    string   `json:"verifier_asset"`
 	VerifierAmount   uint64   `json:"verifier_amount"`
