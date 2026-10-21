@@ -111,6 +111,11 @@ type Predicates struct {
 	Whitelist PredicateList `json:"whitelist"`
 	Limit     *uint64       `json:"limit"`
 	Windows   []Window      `json:"windows"`
+	// Contracts lists the contract templates the asset may enter, by template
+	// hash in ascending order (ContractsRoot). It is omitted when empty, so
+	// every document written before contracts could be listed keeps its exact
+	// canonical bytes, and with them its hash and its issuer signature.
+	Contracts []string `json:"contracts,omitempty"`
 }
 
 // Snapshot is the snapshot/v1 publication document (design doc section 4).
@@ -365,7 +370,11 @@ func (s *Snapshot) computePiDMT() ([32]byte, error) {
 	for i := 0; i < 32; i++ {
 		internal[i] = display[31-i]
 	}
-	return PiCovenant(internal, s.Seq, RulesRootCovenant(bl, wl, limit, nil)), nil
+	contracts, err := ContractsRoot(s.Predicates.Contracts)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	return PiCovenant(internal, s.Seq, RulesRootCovenant(bl, wl, limit, contracts)), nil
 }
 
 // ComputePi derives the policy commitment the snapshot's contents imply. There

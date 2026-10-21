@@ -840,3 +840,112 @@ func TestDamp_RegisterComesFromTheHolderList(t *testing.T) {
 		t.Fatalf("after the list drops a holder the scan must follow it: %s", rec.Body.String())
 	}
 }
+
+// --- contract templates --------------------------------------------------------
+
+// TestDampPolicy_ListsAContractTemplate: an update lists the guarded order. The
+// next snapshot names it, pi commits to it, the published document carries it
+// for opendamp to read, and a later update takes it off the list again.
+func TestDampPolicy_ListsAContractTemplate(t *testing.T) {
+	f := newDampPolicyFixture(t)
+	code, prep := f.policyPrepare(t, map[string]any{
+		"add_contracts": []string{"seqdex/guarded-order"},
+		"reason":        "holders may rest the asset in SeqDEX orders",
+	})
+	if code != 200 {
+		t.Fatalf("prepare: %d %v", code, prep)
+	}
+	hash := hex.EncodeToString(damp.Whitelistable[0].TemplateHash[:])
+	snapRaw, _ := json.Marshal(prep["snapshot"])
+	var snap damp.Snapshot
+	if err := json.Unmarshal(snapRaw, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Predicates.Contracts) != 1 || snap.Predicates.Contracts[0] != hash {
+		t.Fatalf("the next policy must list the template by its hash: %v", snap.Predicates.Contracts)
+	}
+	if err := snap.Validate(); err != nil {
+		t.Fatalf("the listing policy must be self-consistent: %v", err)
+	}
+	// pi commits to the list: the same holders and outpoints without it give
+	// another pi.
+	unlisted := snap
+	unlisted.Predicates.Contracts = nil
+	piUnlisted, err := unlisted.ComputePi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hex.EncodeToString(piUnlisted[:]) == prep["pi_next"] {
+		t.Fatal("pi must commit to the contract list")
+	}
+	change, _ := prep["change"].(map[string]any)
+	if fmt.Sprint(change["added_contracts"]) != "[seqdex/guarded-order]" {
+		t.Fatalf("the change must name the template: %v", change)
+	}
+	derive, _ := prep["derive_snapshot"].(map[string]any)
+	preds, _ := derive["predicates"].(map[string]any)
+	if fmt.Sprint(preds["contracts"]) != "["+hash+"]" {
+		t.Fatalf("derive_snapshot must carry the list for opendamp: %v", preds)
+	}
+
+	policyID, _ := prep["policy_id"].(string)
+	nextCMR, nextSPK := f.nextVerifier(t, 0x21)
+	code, out := f.policyComplete(t, policyID, map[string]any{
+		"sig": f.sign(t, prep["to_sign"].(string)), "verifier_cmrs": nextCMR, "verifier_spk": nextSPK,
+		"signed_tx": f.respend(f.vTxid, f.vVout, nextSPK),
+	})
+	if code != 200 {
+		t.Fatalf("complete: %d %v", code, out)
+	}
+	latest, ok := f.st.LatestSnapshot(f.asset)
+	if !ok || latest.Seq != 1 || !strings.Contains(string(latest.Canonical), `"contracts":["`+hash+`"]`) {
+		t.Fatalf("the published snapshot must list the template: %s", latest.Canonical)
+	}
+
+	// Listing it twice, an unknown template, and removing what is not listed are
+	// refused; taking it off the list is a further update.
+	f.publishVerifierOutput(t, nextSPK, f.node.lastTxid(t), 0)
+	for _, tc := range []struct {
+		body map[string]any
+		want string
+	}{
+		{map[string]any{"add_contracts": []string{hash}, "reason": "again"}, "already on this asset's list"},
+		{map[string]any{"add_contracts": []string{"seqdex/order"}, "reason": "plain order"}, "not a contract template a policy can list"},
+		{map[string]any{"add_contracts": []string{strings.Repeat("42", 32)}, "reason": "unknown"}, "not a contract template a policy can list"},
+	} {
+		code, out := f.policyPrepare(t, tc.body)
+		if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), tc.want) {
+			t.Fatalf("%v: want 400 containing %q, got %d %v", tc.body, tc.want, code, out)
+		}
+	}
+	code, prep2 := f.policyPrepare(t, map[string]any{
+		"remove_contracts": []string{"seqdex/guarded-order"},
+		"reason":           "orders closed",
+	})
+	if code != 200 {
+		t.Fatalf("removal prepare: %d %v", code, prep2)
+	}
+	snapRaw2, _ := json.Marshal(prep2["snapshot"])
+	if strings.Contains(string(snapRaw2), `"contracts"`) {
+		t.Fatalf("a policy that lists nothing carries no contracts key: %s", snapRaw2)
+	}
+	var snap2 damp.Snapshot
+	if err := json.Unmarshal(snapRaw2, &snap2); err != nil {
+		t.Fatal(err)
+	}
+	if err := snap2.Validate(); err != nil {
+		t.Fatalf("the delisting policy must be self-consistent: %v", err)
+	}
+}
+
+// TestDampPolicy_RemovingAnUnlistedTemplateRefused: the asset lists nothing at
+// issuance, so there is nothing to remove.
+func TestDampPolicy_RemovingAnUnlistedTemplateRefused(t *testing.T) {
+	f := newDampPolicyFixture(t)
+	code, out := f.policyPrepare(t, map[string]any{
+		"remove_contracts": []string{"seqdex/guarded-order"}, "reason": "close",
+	})
+	if code != 400 || !strings.Contains(fmt.Sprint(out["error"]), "not on this asset's list of contracts") {
+		t.Fatalf("want 400, got %d %v", code, out)
+	}
+}

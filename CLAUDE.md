@@ -25,7 +25,8 @@ There is no CI. `go build ./... && go test ./...` before every PR is the whole g
 `e2e/supply_cap.py` (a real node and openampd; its docstring has the command) for a change to
 issuance, minting or the supply cap, and `e2e/verifier_token.py` for a change to network-enforced
 issuance or the verifier asset's token, `e2e/damp_two_phase.py` for a change to a snapshot or
-derive document, and `e2e/fee_asset.py` for a change to how a fee is funded.
+derive document, `e2e/damp_contracts.py` for a change to a policy's list of contract templates, and
+`e2e/fee_asset.py` for a change to how a fee is funded.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -45,7 +46,9 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
 | `e2e/fee_asset.py` | the fee rule end to end: no `-feeasset`, each fee paid in the asset whose largest coin covers the most fees, a node accepting nothing refused, a `-feeasset` the node does not accept refused at start |
 | `e2e/damp_two_phase.py` | the README's two-phase issuance and policy update of a network-enforced asset, run as written: every document openampd returns goes to `opendamp` unchanged |
+| `e2e/damp_contracts.py` | a policy's contract templates end to end: openampd lists SeqDEX's guarded order, opendamp derives and builds from the published document, the asset enters an order and a fill carries it to another whitelisted holder, and taking the template off the list stops the next fill |
 | `e2e/verifier_token.py` | a network-enforced asset's verifier-asset token end to end: issued into its covenant, a halt that records, a resume, a transfer after it |
+| `openampd/testdata/opendamp-contracts.json` | a pinned copy of opendamp's `vectors/contracts.json`, the same example policy listing the guarded order; it pins the contract-list commitment and the `pi` it gives, so copy it again when opendamp's template table changes, together with `damp.Whitelistable` |
 | `openampd/testdata/opendamp-addresses.json` | a pinned copy of `vectors/addresses.json` from the [`opendamp`](https://github.com/ConcatenaLabs/opendamp) repository, which holds the covenants; the Go mirror tests check against it, so copy it again whenever opendamp's programs change |
 | `spec/` | frozen formats (contract v1), venue/wallet integration spec |
 | `tools/gen_vectors.py` | golden-vector generator |

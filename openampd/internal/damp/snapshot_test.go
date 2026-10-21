@@ -527,3 +527,38 @@ func limitOrNil(limit uint64) *uint64 {
 	}
 	return &limit
 }
+
+// A snapshot that lists no contract serializes with no contracts key, so every
+// document published before contracts could be listed keeps its bytes, its
+// hash and its signature; one that lists the order validates, and pi moves.
+func TestSnapshotContractsField(t *testing.T) {
+	s := &Snapshot{V: 1, Asset: strings.Repeat("ab", 32), VerifierAsset: strings.Repeat("cd", 32), Q: 1, Tree: TreeDMTv1}
+	wl, _ := WhitelistRoot([][32]byte{{1}})
+	bl, _ := BlacklistRoot(nil)
+	s.Predicates.Whitelist = PredicateList{Root: hex.EncodeToString(wl[:]), Entries: KeyEntries([]string{hex.EncodeToString([]byte{1, 31: 0})})}
+	s.Predicates.Blacklist = PredicateList{Root: hex.EncodeToString(bl[:]), Entries: []PredicateEntry{}}
+	pi0, err := s.ComputePi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := s.CanonicalJSON()
+	if strings.Contains(string(c), "contracts") {
+		t.Fatalf("an unlisting snapshot must not carry the key: %s", c)
+	}
+	s.Predicates.Contracts = []string{hex.EncodeToString(Whitelistable[0].TemplateHash[:])}
+	pi1, err := s.ComputePi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi0 == pi1 {
+		t.Fatal("listing a template must move pi")
+	}
+	s.Pi = hex.EncodeToString(pi1[:])
+	if err := s.Validate(); err != nil {
+		t.Fatalf("a listing snapshot validates: %v", err)
+	}
+	s.Predicates.Contracts = []string{strings.Repeat("42", 32)}
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "not a template a policy can list") {
+		t.Fatalf("an unknown template must be refused: %v", err)
+	}
+}

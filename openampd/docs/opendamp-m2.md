@@ -113,13 +113,18 @@ covenant consumes: [`SPEC-dmt-v1.md`](https://github.com/ConcatenaLabs/opendamp/
 ### Commitments
 
     pi          = H_"OpenDAMP/policy/v1"(version_u8 || asset_32 || seq_be64 || rules_root)
-    rules_root  = node(node(blacklist_root, whitelist_root),
-                       node(limit_commitment, windows_hash))
-    limit_commitment = H_"OpenDAMP/limit/v1"(BE64(limit)), or 32 zero bytes when no limit
-    windows_hash     = 32 zero bytes. A height bound belongs to the holder it
-                       binds, inside that holder's whitelist leaf; the separate
-                       class-keyed windows array no shipped covenant reads is
-                       refused by Validate rather than committed to
+    rules_root  = SHA256(SHA256(blacklist_root || whitelist_root) ||
+                         SHA256(limit_commitment || contracts_commitment))
+    limit_commitment     = BE64(limit) left-padded with zeros to 32 bytes, or
+                           32 zero bytes when no limit
+    contracts_commitment = H_"OpenDAMP/contracts/v1"(hash_1 || ... || hash_n)
+                           over the template hashes of predicates.contracts in
+                           ascending order, or 32 zero bytes when the policy
+                           lists no contract template. Nothing else commits in
+                           this slot: a height bound belongs to the holder it
+                           binds, inside that holder's whitelist leaf, and the
+                           separate class-keyed windows array no shipped
+                           covenant reads is refused by Validate
     snapshot hash    = SHA256(canonical JSON without issuer_sig)
     issuer_sig       = BIP340 over H_"OpenDAMP/snapshot/v1"(snapshot hash)
 
