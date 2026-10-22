@@ -119,6 +119,11 @@ type Asset struct {
 	// Absent while the token has not moved in (assets issued before supply
 	// caps, until their token is moved), and then the asset cannot be minted.
 	SupplyCap *SupplyCap `json:"supply_cap,omitempty"`
+	// Tree is set once the issuer enables the asset's tree (POST
+	// /v1/issuer/tree): holdings may then sit in enclave-1 leaves of the
+	// operator it names, reassigned off the chain under the same rules. Absent
+	// on every asset that never enabled one, so those records are unchanged.
+	Tree *TreeTerms `json:"tree,omitempty"`
 }
 
 // SupplyCap records an asset's supply-cap covenant (sequentia-contracts'
@@ -220,13 +225,17 @@ type VerifierToken struct {
 }
 
 // TransferRecord supports velocity accounting; entries above a reorged-out
-// height are re-marked unconfirmed by the follower.
+// height are re-marked unconfirmed by the follower. A record of kind "tree" is
+// an off-chain reassignment in the asset's tree: it has no txid, carries the
+// height it was approved at, and the follower never touches it.
 type TransferRecord struct {
 	Txid      string `json:"txid"`
 	Asset     string `json:"asset"`
 	SenderAID string `json:"sender_aid"`
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
+	Kind      string `json:"kind,omitempty"`
+	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"
 }
 
 type LogEntry struct {
@@ -313,11 +322,16 @@ type State struct {
 	// Snapshots maps an asset id to its published OpenDAMP policy snapshots in
 	// seq order (index == seq; the snapshot service enforces gapless append).
 	// Absent on documents written before M2; initialised on load.
-	Snapshots    map[string][]*StoredSnapshot `json:"snapshots,omitempty"`
-	RecentBlocks []string                     `json:"recent_blocks"` // newest last
-	Height       int64                        `json:"height"`
-	LogHead      string                       `json:"log_head"`
-	LogSeq       uint64                       `json:"log_seq"`
+	Snapshots map[string][]*StoredSnapshot `json:"snapshots,omitempty"`
+	// TreeLeaves is the register of enclave-1 leaves, keyed by salt (hex), and
+	// TreeTransfers the reassignments approved among them, by id. Absent on
+	// documents written before trees existed; initialised on load.
+	TreeLeaves    map[string]*TreeLeaf     `json:"tree_leaves,omitempty"`
+	TreeTransfers map[string]*TreeTransfer `json:"tree_transfers,omitempty"`
+	RecentBlocks  []string                 `json:"recent_blocks"` // newest last
+	Height        int64                    `json:"height"`
+	LogHead       string                   `json:"log_head"`
+	LogSeq        uint64                   `json:"log_seq"`
 }
 
 type Store struct {
@@ -381,6 +395,12 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.state.DampPolicies == nil {
 		s.state.DampPolicies = map[string]string{}
+	}
+	if s.state.TreeLeaves == nil {
+		s.state.TreeLeaves = map[string]*TreeLeaf{}
+	}
+	if s.state.TreeTransfers == nil {
+		s.state.TreeTransfers = map[string]*TreeTransfer{}
 	}
 	return s, nil
 }

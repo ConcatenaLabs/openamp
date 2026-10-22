@@ -100,6 +100,11 @@ func (s *Server) followTick() error {
 		st.RecentBlocks = recent
 		for i := range st.Transfers {
 			rec := &st.Transfers[i]
+			// A tree transfer happened off the chain: it keeps the height it
+			// was approved at, whatever the chain does.
+			if rec.Kind == "tree" {
+				continue
+			}
 			if forkAt >= 0 && rec.Height >= forkAt {
 				rec.Height = -1
 			}
@@ -107,6 +112,7 @@ func (s *Server) followTick() error {
 				rec.Height = h
 			}
 		}
+		followTree(st, forkAt, confirmed)
 		return nil
 	})
 }

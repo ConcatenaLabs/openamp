@@ -8,7 +8,8 @@
 //	GET  /v1/users/{aid}/balance        confirmed enclave balance
 //	POST /v1/transfers                  hosted transfer build (fee convert/sponsor)
 //	POST /v1/transfers/{id}/complete    submit user signatures -> broadcast
-//	POST /v1/cosign                     raw co-sign for self-built transactions
+//	POST /v1/cosign                     raw co-sign for self-built transactions (tree_outputs: boards of an asset's tree)
+//	POST /v1/tree/leaves/{salt}/exited  close a tree leaf whose holder took it home to its enclave
 //	GET  /v1/assets, /v1/assets/{id}    contracts and terms
 //	GET  /v1/supply                     chain-derived circulating supply
 //	GET  /v1/snapshots                  OpenDAMP policy snapshots (latest or ?seq=n)
@@ -40,6 +41,10 @@
 //	POST /v1/issuer/anchor              anchor the transparency log on-chain
 //	POST /v1/issuer/rotate-blinding     cut a new blinding-key epoch for an asset
 //	POST /v1/issuer/consolidate         sweep blinded fee-asset change into an explicit coin
+//	POST /v1/issuer/tree                enable an asset's tree, naming its operator (tree.go)
+//	POST /v1/issuer/tree/transfer       approve a reassignment between leaves of the tree
+//	POST /v1/issuer/tree/transfer/{id}/drop  give an unused reassignment's inputs back
+//	POST /v1/issuer/tree/clawback       the policy half of a tree leaf's clawback
 package server
 
 import (
@@ -88,6 +93,12 @@ type Config struct {
 	// held off this server, which can replace the operator key. An issuance
 	// may name its own.
 	CapColdKey string
+	// ArcaEnclave is the path to arca-enclave, built from the arca repository,
+	// which reads the boards and transfers of an asset's tree (tree.go). Empty:
+	// no asset has a tree here, and every tree call answers 501.
+	ArcaEnclave string
+	// TreeTool, when set, runs in place of the binary at ArcaEnclave (tests).
+	TreeTool TreeTool
 }
 
 type Server struct {
@@ -118,6 +129,11 @@ type Server struct {
 	tool               CovenantTool
 	capOperatorKey     string // x-only hex of the key in capOperatorKeyFile
 	capOperatorKeyFile string
+
+	// treeTool runs arca-enclave; nil when no asset can have a tree here.
+	treeTool TreeTool
+	// treeLocks holds one mutex per asset over its tree's register.
+	treeLocks sync.Map
 }
 
 // pendingTTL bounds how long a hosted-transfer build waits for the caller's
@@ -176,6 +192,11 @@ func New(cfg Config, st *store.Store, node, wallet *rpc.Client) (*Server, error)
 			return nil, fmt.Errorf("-capcoldkey is this server's own supply-cap operator key: the cold key must be one this server does not hold")
 		}
 	}
+	if cfg.TreeTool != nil {
+		s.treeTool = cfg.TreeTool
+	} else if cfg.ArcaEnclave != "" {
+		s.treeTool = execTreeTool{path: cfg.ArcaEnclave}
+	}
 	gh, err := node.GetBlockHash(0)
 	if err != nil {
 		return nil, fmt.Errorf("genesis: %w", err)
@@ -203,6 +224,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/transfers", s.handleTransferBuild)
 	mux.HandleFunc("POST /v1/transfers/{id}/complete", s.handleTransferComplete)
 	mux.HandleFunc("POST /v1/cosign", s.handleCosign)
+	mux.HandleFunc("POST /v1/tree/leaves/{salt}/exited", s.handleTreeExited)
 	mux.HandleFunc("GET /v1/assets", s.handleAssets)
 	mux.HandleFunc("GET /v1/assets/{id}", s.handleAsset)
 	mux.HandleFunc("GET /v1/supply", s.handleSupply)
@@ -233,6 +255,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/issuer/anchor", s.issuerAuth(s.handleAnchor))
 	mux.HandleFunc("POST /v1/issuer/rotate-blinding", s.issuerAuth(s.handleRotateBlinding))
 	mux.HandleFunc("POST /v1/issuer/consolidate", s.issuerAuth(s.handleConsolidate))
+	mux.HandleFunc("POST /v1/issuer/tree", s.issuerAuth(s.handleTreeEnable))
+	mux.HandleFunc("POST /v1/issuer/tree/transfer", s.issuerAuth(s.handleTreeTransfer))
+	mux.HandleFunc("POST /v1/issuer/tree/transfer/{id}/drop", s.issuerAuth(s.handleTreeTransferDrop))
+	mux.HandleFunc("POST /v1/issuer/tree/clawback", s.issuerAuth(s.handleTreeClawback))
 	return mux
 }
 

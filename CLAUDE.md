@@ -39,6 +39,8 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/cmd/keygen`, `cmd/signer` | demo client helpers |
 | `openampd/internal/server/` | HTTP API, policy engine, issuance, transfers, clawback, pledges, snapshots, chain follower |
 | `openampd/internal/server/frostsigner/` | the FROST 2-of-3 policy-key backend (DKG, `Member`/`Transport` seam) |
+| `openampd/internal/server/tree.go` | an asset's tree: boards admitted at `/v1/cosign`, the register of leaves, approved reassignments, exits and clawbacks, all read through `arca-enclave` (`-arcaenclave`) |
+| `openampd/internal/server/treefake/`, `treerate/` | a stand-in for `arca-enclave` that a test binary runs as, and the measured rate of tree approvals (`OPENAMPD_TREE_RATE=1`) |
 | `openampd/internal/damp/` | OpenDAMP policy commitment, dmt-v1 tree, snapshot documents |
 | `openampd/internal/elements/` | minimal Elements tx codec, taproot, sighash — golden-vectored |
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
@@ -94,6 +96,11 @@ from GitHub and builds there — never edit source on the server, never copy bin
   A network-enforced asset's verifier-asset token goes into its own covenant
   (`verifiertoken.go`) the same way: from the wallet it could mint the verifier asset anywhere,
   which bypasses the policy of every holder.
+- **A tree leaf is read only through `arca-enclave`.** Never build or parse an Arca script, record
+  or message in Go: the tool is built from the arca repository, so what this server checks is
+  what the tree uses. Every request to it carries the asset's terms from this server's record
+  (chain, operator, policy key, clawback), never the caller's, and every movement it approves
+  runs `checkRules`, the same code as an on-chain transfer.
 - **`-demoissuer` holds issuer keys server-side.** It is a testnet demo flag. A production issuer
   keeps that key offline.
 

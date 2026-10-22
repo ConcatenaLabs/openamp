@@ -22,6 +22,16 @@ import (
 // chain; it never trusts request metadata. It enforces containment (Rule 1
 // included) and the asset's policy rules.
 func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64) error {
+	return s.checkTransferAdmitting(tx, asset, sender, atomsOut, nil)
+}
+
+// checkTransferAdmitting is checkTransfer with admitted outputs beside the
+// registered enclaves: scripts (hex) of tree outputs the caller has proved are
+// enclave-1 boards of the asset's tree, each paying the holder it maps to
+// (tree.go, admitTreeOutputs). Such an output is that holder's for every rule,
+// exactly as an output at the holder's enclave is.
+func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
+	admitted map[string]*store.User) error {
 	if sender.Frozen {
 		return refuse("sender frozen")
 	}
@@ -40,6 +50,9 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 			}
 		}
 	})
+	for spk, u := range admitted {
+		spkToUser[spk] = u
+	}
 
 	recipients := map[string]uint64{} // aid -> atoms received
 	var burned uint64                 // atoms destroyed, which also leave the sender
@@ -77,7 +90,16 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 			return refuse("recipient %s frozen", u.AID)
 		}
 	}
+	return s.checkRules(asset, sender, recipients, burned, height)
+}
 
+// checkRules is the asset's policy over one movement, wherever it happens: on
+// the chain (checkTransferAdmitting) or between leaves of the asset's tree
+// (tree.go). recipients is what each other holder receives, burned what is
+// destroyed, height the chain's height the rules are judged at. Everything a
+// holder holds counts, in its enclave and in live leaves alike
+// (holderBalances).
+func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64) error {
 	// Pledged collateral (Pignus Tier C). A restricted asset cannot be locked
 	// in a lending covenant -- it may only sit at an enclave output this server
 	// co-signs for -- so the collateral does not move at all and this check is
@@ -300,8 +322,9 @@ func explicitAssetCommit(displayID string) []byte {
 }
 
 // holderBalances scans confirmed holdings for every account that could hold the
-// asset. It is the single read behind the ownership report and the circulating
-// supply figure.
+// asset, and adds what each holds in live leaves of the asset's tree. It is the
+// single read behind the ownership report, the circulating supply figure and
+// every rule that reads a balance.
 //
 // WHICH ACCOUNTS THOSE ARE DIFFERS BY TIER, and getting it wrong is silent:
 //
@@ -381,6 +404,15 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 		return nil, scanErr
 	}
 	balances := map[string]uint64{}
+	// What holders hold in live leaves of the asset's tree. Their coins sit on
+	// the chain at boards and tree outputs, which are no enclave, so without the
+	// register the scan below would miss them and every rule reading a balance
+	// would read too little.
+	s.st.View(func(st *store.State) {
+		for aid, atoms := range store.LiveTreeAtoms(st, asset.ID) {
+			balances[aid] += atoms
+		}
+	})
 	if len(spks) == 0 {
 		return balances, nil
 	}
@@ -1094,6 +1126,9 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		Asset     string `json:"asset"`
 		SenderAID string `json:"sender_aid"`
 		Inputs    []int  `json:"inputs"`
+		// TreeOutputs names outputs that are boards of the asset's tree, each
+		// with its board record (tree.go): admitted as their holder's.
+		TreeOutputs []treeOutput `json:"tree_outputs,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
@@ -1181,8 +1216,24 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var admitted map[string]*store.User
+	var boards []*store.TreeLeaf
+	if len(req.TreeOutputs) > 0 {
+		admitted, boards, err = s.admitTreeOutputs(tx, asset, req.TreeOutputs)
+		if err == errNoTreeTool {
+			httpErr(w, 501, noTreeTool)
+			return
+		}
+		if err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+			}
+			treeErr(w, err)
+			return
+		}
+	}
 	atomsOut := map[string]uint64{}
-	if err := s.checkTransfer(tx, asset, sender, atomsOut); err != nil {
+	if err := s.checkTransferAdmitting(tx, asset, sender, atomsOut, admitted); err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
 			logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
 			httpErr(w, 403, "%v", pr)
@@ -1232,6 +1283,10 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.st.AppendLog("cosign", map[string]any{"txid": rawTxid, "sender": sender.AID, "asset": asset.ID, "atoms": sent})
+	if err := s.registerBoards(boards); err != nil {
+		httpErr(w, 500, "register the boards: %v", err)
+		return
+	}
 	httpJSON(w, map[string]any{"sigs": sigs})
 }
 

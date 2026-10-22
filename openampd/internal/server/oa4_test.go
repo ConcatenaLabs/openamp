@@ -122,6 +122,8 @@ func TestOA4_MixedAssetProof_ConfidentialPaymentOutputRejected(t *testing.T) {
 // oa4Node is a mock elementsd for the build/complete flow.
 type oa4Node struct {
 	rawTxs     map[string]string            // txid -> raw hex (getrawtransaction / spentOutputs)
+	confs      map[string]int64             // txid -> confirmations (verbose getrawtransaction)
+	tip        int64                        // getblockcount
 	scan       map[string][]rpc.ScanUnspent // spk -> UTXOs (scantxoutset)
 	feeUnspent []rpc.Unspent                // listunspent (fee funding)
 	feeRates   map[string]uint64            // getfeeexchangerates (nil: the fee asset at 1e8)
@@ -150,6 +152,7 @@ type oa4Node struct {
 func newOA4Node() *oa4Node {
 	return &oa4Node{
 		rawTxs:     map[string]string{},
+		confs:      map[string]int64{},
 		scan:       map[string][]rpc.ScanUnspent{},
 		addrSpk:    map[string]string{},
 		newAddr:    "sqtestchangeaddr",
@@ -173,10 +176,16 @@ func (n *oa4Node) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(map[string]uint64{oa4FeeID: 100000000})
+	case "getblockcount":
+		reply(n.tip)
 	case "getrawtransaction":
 		var txid string
 		_ = json.Unmarshal(req.Params[0], &txid)
 		if raw, ok := n.rawTxs[txid]; ok {
+			if len(req.Params) > 1 && string(req.Params[1]) == "true" {
+				reply(map[string]any{"hex": raw, "confirmations": n.confs[txid]})
+				return
+			}
 			reply(raw)
 			return
 		}
