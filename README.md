@@ -27,6 +27,7 @@ Design document: [`DESIGN.md`](DESIGN.md). Frozen format specifications live und
 - **Confidentiality is opt-in per transfer.** Sequentia is transparent by default with opt-in confidentiality, and OpenAMP follows: an asset is never "a confidential asset" — any holder may receive or move ANY restricted asset confidentially in a given transaction. `POST /v1/transfers` takes `"confidential": true` to blind that transfer's enclave outputs (amounts and asset tags hidden on-chain); `GET /address?confidential=1` returns the blinded (blech32) enclave address; issuance accepts `"confidential": true` meaning only "blind this mint transaction". A later mint cannot be blinded: the supply cap counts it from the explicit issuance on its own input, so the amount is public whatever the output says. An enclave can hold a mix of explicit and blinded coins, and every read (balances, holders, supply) unifies both views. The policy server derives and holds the per-(holder, asset) blinding keys in a node watch wallet, so the issuer sees and reports every holding and outside observers see nothing: confidentiality is privacy from outsiders only, never from the issuer. No confidential-transaction crypto is reimplemented: the node's `rawblindrawtransaction`/unblind machinery does the work, and the holder still only signs the returned sighashes.
 - **Supply caps.** The server never holds a reissuance token. Every asset's token goes, in its issuance transaction, into a supply cap: a Simplicity covenant from [`sequentia-contracts`](https://github.com/ConcatenaLabs/sequentia-contracts) (`templates/supply_cap`, `docs/supply-cap.md`) that mints only while the total minted through it stays at or under a cap fixed at issuance. This server's operator key signs mints; a cold key kept off this server can move the covenant to new keys. No path takes the token out or raises the cap, so a compromise of this server mints at most the room left under the cap, and a compromise of the cold key gains no more.
 - **Fees (Rule 1).** A restricted asset never appears in a fee output, so it can never be swept into a block producer's coinbase. The policy server refuses to co-sign such a transaction, and Sequentia's default-deny fee-asset whitelist makes it non-paying at every producer regardless. Holders still pay costs in the restricted asset via fee conversion (the issuer takes a fee-equivalent slice into its own enclave and attaches the real fee in an ordinary asset, atomically in the same transaction), or the server sponsors the fee, or the sender self-pays in an ordinary asset with no issuer involvement.
+- **Trees.** An issuer may also hold an asset's holdings in a tree of off-chain leaves run by an operator it names (`POST /v1/issuer/tree`), where a transfer between registered holders settles at once without a transaction. Each leaf is an `enclave-1` leaf: its owner's key (derived from the holder's registered key, so only that holder signs for it) and the operator's key spend it together, and the owner alone, after a delay, can only take it home to the owner's own enclave, in full. The operator co-signs a leaf's spend only beside this server's signature over the same message, and this server signs only a movement that passes the asset's rules, exactly as on the chain; the scripts and messages it checks come from `arca-enclave`, a tool built from the [`arca`](https://github.com/ConcatenaLabs/arca) repository, so they are the ones the tree uses. What the issuer can do to a coin in the tree, in plain words: refuse to co-sign its move (a freeze, or any rule), and, only where the asset elected clawback at issuance, take back a leaf once it is on the chain, through the same claw leaf the enclave carries. What it cannot do: move a holder's leaf without the holder's signature, or stop the holder taking it home. A tree transfer counts toward velocity like any other, and a holder's leaves count in every balance, holder count and ownership report.
 - **Transparency log.** Every registration, rule change, freeze, transfer approval, refusal, and clawback is appended to a hash-chained public log (`GET /v1/log`); clawbacks are logged before they are signed. The issuer can anchor the log head on-chain in an OP_RETURN (`POST /v1/issuer/anchor`).
 - **Reorg awareness.** Sequentia reorganizes whenever Bitcoin reorganizes (anchoring is supreme). The chain follower detects forks and re-marks transfer records above the fork point as unconfirmed, so velocity accounting and reports reflect only the surviving chain.
 
@@ -44,7 +45,8 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `GET /v1/users/{aid}/balance?asset=<id>` | Confirmed enclave balance |
 | `POST /v1/transfers` | Build a hosted transfer (fee conversion or sponsorship) |
 | `POST /v1/transfers/{id}/complete` | Submit the holder's signatures, co-sign and broadcast |
-| `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid) |
+| `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid), including a board into an asset's tree |
+| `POST /v1/tree/leaves/{salt}/exited` | Close a tree leaf its holder took home to its enclave (anyone may report; the chain is the proof) |
 | `GET /v1/assets` | All assets with their contracts |
 | `GET /v1/assets/{id}` | One asset |
 | `GET /v1/supply?asset=<id>` | Chain-derived circulating supply, the asset's supply cap and, for a network-enforced asset, its verifier-asset token's covenant: `{"asset", "circulating_atoms", "height", "supply_cap", "verifier_token"}` |
@@ -108,6 +110,20 @@ Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <lea
 
 **Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded; the holder cap would be exceeded; or the sender's vested balance is insufficient.
 
+### An asset's tree
+
+Every tree call needs `-arcaenclave` (the tool) and answers 501 without it. The tool reads a board record and a transfer for this server: `arca-enclave board` and `arca-enclave transfer`, JSON on stdin and stdout. This server fills the asset's terms (its chain, the tree's operator, the policy key and the clawback election) into every request it sends the tool, whatever the caller sent.
+
+**`POST /v1/issuer/tree`** `{"asset", "operator": "<x-only key>"}` enables the asset's tree and logs it. `GET /v1/assets/{id}` then carries `"tree": {"operator", "policy", "clawback": "<issuer key>" | null}`. The operator cannot change while any leaf of it is held.
+
+**Boarding.** A holder brings coins into the tree by paying its enclave coin to a board output, through `POST /v1/cosign` with the board named: `"tree_outputs": [{"output": 0, "record": "<board record hex>"}]`. The output is admitted only when the tool reads the record as an `enclave-1` board of this asset's tree (its policy key, its clawback election, its operator, this chain) for a registered holder, whose script and explicit value are exactly the output's, at a salt the register has never held. The holder is then that output's recipient for every rule. The leaf enters the register `boarding`, and is `live` once the board transaction is in a block (`boarding` again if a reorganisation takes the block away).
+
+**`POST /v1/issuer/tree/transfer`** `{"asset", "transfer": <the tool's transfer request: inputs (coin records with their checkpoint values) and outputs (holder key, value, nonces, exit delay)>}`, called by the tree's operator. Refused unless every input is a live leaf of one sender at the value the tool reads, whose checkpoint keeps the whole coin; every output an `enclave-1` leaf of a registered holder; and the outputs take every atom, since a remainder of a restricted asset could go anywhere. Then the same rules as on the chain (freeze, categories, category-deny windows, lock-in, velocity, holder caps, vesting, pledges), each refusal worded as on the chain, HTTP 403 and logged. Approved: the inputs are spent and the outputs live in the register, a velocity record of kind `tree` is kept at the height of approval, and the answer is `{"id", "policy", "signatures": [{"digest", "signature"}]}`, two per input (its checkpoint's message and the reassignment's): each a BIP340 signature by the policy key over `SHA256(T ‖ T ‖ digest)`, `T = SHA256("OpenAMP/tree-cosign")`. The tag keeps these apart from every taproot signature hash the same key signs on the chain. The same request again gets the same answer. **`POST /v1/issuer/tree/transfer/{id}/drop`** gives the inputs back while no output was spent onward.
+
+**`POST /v1/tree/leaves/{salt}/exited`** `{"txid"}`: closes a live leaf when that transaction, in a block, spends the leaf's own script and pays its holder's enclave the leaf's atoms at output 0. A reorganisation that takes the block away opens it again.
+
+**`POST /v1/issuer/tree/clawback`** `{"asset", "salt", "tx", "input", "reason"}`: for a live leaf of an asset that elected clawback, spent at `input` from one of the outputs the leaf can be on the chain at, by the claw leaf, with every output of the asset paying the issuer's enclave or a permitted burn. The reason is logged before anything is signed. Answer: `{"input", "sighash", "policy_sig", "leaf", "control", "txid"}`, plus `"issuer_sig"` and the whole `"witness"` (`<policy sig> <issuer sig> <leaf> <control>`) when the server holds the issuer key (`-demoissuer`), else `"to_sign"` for the issuer. Only the leaf that holds the coin now is clawed back: a leaf already reassigned is no longer its old holder's.
+
 ### Issuer surface (`Authorization: Bearer <issuer token>`)
 
 | Method and path | Purpose |
@@ -133,6 +149,10 @@ Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <lea
 | `POST /v1/issuer/pledges/{id}/release` | Debt settled: free the collateral (lender-signed) |
 | `POST /v1/issuer/pledges/{id}/seize` | Default: move the collateral to the lender (lender-signed) |
 | `GET /v1/issuer/holders?asset=<id>` | Ownership report |
+| `POST /v1/issuer/tree` | Enable an asset's tree, naming its operator's key |
+| `POST /v1/issuer/tree/transfer` | Approve a reassignment between leaves of the tree: the rules, the register, one policy signature per message |
+| `POST /v1/issuer/tree/transfer/{id}/drop` | Give an approved reassignment's inputs back while none of its leaves was used |
+| `POST /v1/issuer/tree/clawback` | The policy half of a tree leaf's clawback, where the asset elected clawback |
 | `POST /v1/issuer/anchor` | Anchor the transparency-log head on-chain |
 | `POST /v1/issuer/rotate-blinding` | Rotate an asset's blinding-key epoch and re-import every holder's key |
 | `POST /v1/issuer/consolidate` | Sweep blinded change of an accepted fee asset into an explicit coin |
@@ -338,7 +358,7 @@ The same flow, driven programmatically against a regtest node, is the committed 
 
 ## How openampd uses the Sequentia node
 
-`openampd` needs one Sequentia node (`sequentiad`) with a funded wallet, and the `token-covenants` tool for the supply caps; there are no consensus changes and no patched node. An explorer (electrs) instance is optional: it is only the prevout fallback for `POST /v1/cosign` when the node runs without `-txindex`. RPC usage:
+`openampd` needs one Sequentia node (`sequentiad`) with a funded wallet, and the `token-covenants` tool for the supply caps; an asset's tree also needs the `arca-enclave` tool. There are no consensus changes and no patched node. An explorer (electrs) instance is optional: it is only the prevout fallback for `POST /v1/cosign` when the node runs without `-txindex`. RPC usage:
 
 - chain queries: `getblockcount`, `getblockhash`, `getblock` (follower), `gettxout` (prevout resolution and the supply cap's coin), `getrawtransaction` (the coins handed to the supply-cap tool), `scantxoutset` (enclave balances and holder reports), `decodescript` (address rendering), `getfeeexchangerates` and `dumpassetlabels` (the assets the node accepts for fees, and its rate for each);
 - wallet operations: `listunspent`, `getnewaddress`, `getaddressinfo`, `signrawtransactionwithwallet`, `sendrawtransaction`, and `createrawtransaction` + `fundrawtransaction` for log anchors.
@@ -390,6 +410,7 @@ Run against a node:
 | `-signer` | `local` (`OPENAMPD_SIGNER`) | policy-key backend: `local` (one key per asset) or `frost` (2-of-3 threshold quorum, DKG-generated keys; `OPENAMPD_FROST_KEYGEN=dealer` reverts to the trusted-dealer split) |
 | `-dampregistry` | (none) | path to the OpenDAMP CMR pinning file (`OPENAMPD_DAMP_REGISTRY`); unset disables network enforcement |
 | `-electrs` | `http://127.0.0.1:3003` (`OPENAMPD_ELECTRS_URL`) | explorer (electrs) base URL; prevout fallback for `/v1/cosign` when the node lacks `-txindex` |
+| `-arcaenclave` | `$OPENAMPD_ARCA_ENCLAVE` | path to `arca-enclave`, built from the arca repository, which reads the boards and transfers of an asset's tree; unset, no asset has a tree here and every tree call answers 501 |
 | `-follow` | `2s` | chain follower poll interval |
 
 Production deployment (systemd unit, Caddy reverse proxy, secrets handling): [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
@@ -405,6 +426,11 @@ openampd/internal/server/   HTTP API, policy engine, issuance, transfers,
                             chain follower
 openampd/internal/server/frostsigner/  the FROST 2-of-3 policy-key backend
                             (DKG, signing, Member/Transport seam)
+openampd/internal/server/tree.go  an asset's tree: admission, the register,
+                            reassignments, exits, clawback
+openampd/internal/server/treefake/  a stand-in for arca-enclave in tests
+openampd/internal/server/treerate/  the measured rate of tree approvals
+                            (OPENAMPD_TREE_RATE=1)
 openampd/internal/damp/     OpenDAMP policy commitment (pi), dmt-v1 tree,
                             snapshot document format
 openampd/internal/elements/ minimal Elements tx codec, taproot, sighash

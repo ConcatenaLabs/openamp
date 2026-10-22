@@ -48,6 +48,9 @@ OPENAMPD_TOKEN_TOOL=/root/.local/bin/token-covenants
                                                 # and minting are refused
 OPENAMPD_CAP_COLD_KEY=<x-only hex>              # default cold key of new supply caps,
                                                 # made on the owner's machine, never here
+OPENAMPD_ARCA_ENCLAVE=/root/.local/bin/arca-enclave
+                                                # reads the boards and transfers of an
+                                                # asset's tree; unset, no asset has one
 ```
 
 The supply-cap tool is installed from a sequentia-contracts commit with no
@@ -61,6 +64,13 @@ lost or stolen operator key, with `token-covenants supply-cap build` (path
 records the move. Assets issued before openampd held its tokens in supply caps
 have their tokens moved in with `POST /v1/issuer/supply-cap`, and a
 network-enforced asset's verifier-asset token with `POST /v1/issuer/verifier-token`.
+
+The tree tool is built from an arca commit in a clone of its own, since it is a
+member of arca's workspace: `git clone https://github.com/ConcatenaLabs/arca
+/root/sequentia/arca-enclave-src`, check out the commit, `cargo build --release
+--locked -p arca-covenant --bin arca-enclave`, and install
+`target/release/arca-enclave` as `/root/.local/bin/arca-enclave`. Build it from
+the commit the tree's operator runs, so both read a leaf alike.
 
 openampd pays each transaction's fee in the asset the wallet rule picks:
 among the assets the node accepts for fees (its `setfeeexchangerates`
