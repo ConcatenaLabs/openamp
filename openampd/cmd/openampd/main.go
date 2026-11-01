@@ -23,9 +23,9 @@ func main() {
 		listen      = flag.String("listen", "127.0.0.1:8722", "HTTP listen address")
 		datadir     = flag.String("datadir", defaultDatadir(), "state directory")
 		rpcURL      = flag.String("rpc", "http://127.0.0.1:18776", "Sequentia node (sequentiad) RPC URL")
-		rpcAuth     = flag.String("rpcauth", "", "user:pass or cookie:<path>")
+		rpcAuth     = secretFlag("rpcauth", "OPENAMPD_RPCAUTH", "user:pass or cookie:<path>")
 		rpcWallet   = flag.String("rpcwallet", "", "wallet name (appended as /wallet/<name>)")
-		issuerToken = flag.String("issuertoken", "", "bearer token for issuer endpoints")
+		issuerToken = secretFlag("issuertoken", "OPENAMPD_ISSUER_TOKEN", "bearer token for issuer endpoints")
 		feeAsset    = flag.String("feeasset", os.Getenv("OPENAMPD_FEE_ASSET"), "display hex of the one asset the server pays fees in; the node must accept it for fees (default: none, each transaction's fee asset follows the wallet rule)")
 		feeSats     = flag.Uint64("feesats", 1000, "the fee of each server-funded transaction, valued in the node's reference unit (atoms at a rate of 1e8) and paid in its fee asset at the node's rate")
 		demoIssuer  = flag.Bool("demoissuer", false, "hold issuer keys server-side (testnet demo only)")
@@ -41,7 +41,7 @@ func main() {
 	flag.Parse()
 
 	if *rpcAuth == "" {
-		log.Fatal("-rpcauth is required (user:pass or cookie:<path>)")
+		log.Fatal("-rpcauth or OPENAMPD_RPCAUTH is required (user:pass or cookie:<path>)")
 	}
 	node, err := rpc.New(*rpcURL, *rpcAuth)
 	if err != nil {
@@ -127,6 +127,17 @@ func defaultDatadir() string {
 		return ".openampd"
 	}
 	return home + "/.openampd"
+}
+
+// secretFlag defines a string flag that, when it is not given, takes its value
+// from the environment variable env. A secret given as a flag is on the command
+// line, which every user on the machine reads (ps, /proc/<pid>/cmdline); one in
+// the environment is not. The value read is never the flag's printed default,
+// so a usage text shows no secret.
+func secretFlag(name, env, usage string) *string {
+	p := flag.String(name, "", usage+" (env "+env+")")
+	*p = os.Getenv(env)
+	return p
 }
 
 func envOr(key, def string) string {

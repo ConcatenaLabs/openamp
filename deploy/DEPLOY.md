@@ -80,9 +80,11 @@ or several. `-feesats` in the unit is the fee's value in the node's reference
 unit, so it buys the same in every asset. `OPENAMPD_FEE_ASSET`, when set, pins
 one asset instead, and openampd refuses to start unless the node accepts it.
 
-The unit passes none of the variables after `OPENAMPD_ISSUER_TOKEN` as flags;
-`openampd` reads them from the environment, so the env file is the only place
-they need to be set. The public instance runs the FROST backend and has issued
+The unit passes only `OPENAMPD_RPC` and `OPENAMPD_WALLET` as flags; `openampd`
+reads every other variable from the environment, so the env file is the only
+place they need to be set. The two secrets, `OPENAMPD_RPCAUTH` and
+`OPENAMPD_ISSUER_TOKEN`, must never be passed as `-rpcauth` or `-issuertoken`:
+a command line is readable by every user on the machine. The public instance runs the FROST backend and has issued
 network-enforced assets, which needs `OPENAMPD_SIGNER` and
 `OPENAMPD_DAMP_REGISTRY`.
 
