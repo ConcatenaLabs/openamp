@@ -398,9 +398,9 @@ Run against a node:
 | `-listen` | `127.0.0.1:8722` | HTTP listen address |
 | `-datadir` | `~/.openampd` | state directory (`state.json`, `keys.json` 0600, `transparency.log`) |
 | `-rpc` | `http://127.0.0.1:18776` | `sequentiad` RPC URL (the node's RPC port on chain `test`) |
-| `-rpcauth` | (required) | `user:pass` or `cookie:<path>` |
+| `-rpcauth` | `$OPENAMPD_RPCAUTH` (required) | `user:pass` or `cookie:<path>`; set it in the environment, since a command line is readable by every user on the machine |
 | `-rpcwallet` | (none) | wallet name, appended as `/wallet/<name>` |
-| `-issuertoken` | (none) | bearer token gating `/v1/issuer/*`; empty locks the issuer API |
+| `-issuertoken` | `$OPENAMPD_ISSUER_TOKEN`, else none | bearer token gating `/v1/issuer/*`; empty locks the issuer API; set it in the environment, as for `-rpcauth` |
 | `-feeasset` | `$OPENAMPD_FEE_ASSET`, else none | display hex of the one asset openampd pays fees in, refused at start unless the node accepts it for fees; unset, each transaction's fee asset follows the wallet rule (see "How openampd uses the Sequentia node") |
 | `-feesats` | `1000` | the fee of each server-funded transaction, valued in the node's reference unit (atoms at a rate of 1e8) and paid in its fee asset at the node's rate |
 | `-tokentool` | `$OPENAMPD_TOKEN_TOOL` | path to `token-covenants` (sequentia-contracts' `tools/token-covenants`); unset, issuance and minting are refused |
