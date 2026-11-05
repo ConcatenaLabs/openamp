@@ -1,0 +1,26 @@
+# `go build ./... && go test ./...`, the gate CLAUDE.md names, on every pull request and on main,
+# on the Go go.mod requires (the testnet server's Go fetches that toolchain to build openampd).
+# Dependencies are vendored.
+#
+# Not run here, by design (CLAUDE.md):
+# - SKIPPED (needs a real node and openampd): the integration proofs in e2e/.
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: go version
+      - run: go build ./...
+      - run: go test ./...
