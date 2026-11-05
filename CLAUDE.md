@@ -21,7 +21,8 @@ go test ./...
 go build -o openampd/openampd ./openampd/cmd/openampd
 ```
 
-There is no CI. `go build ./... && go test ./...` before every PR is the whole gate, plus
+CI (`.github/workflows/tests.yml`) runs `go build ./... && go test ./...` on every pull request and
+on `main`. Before a PR, run that too, plus
 `e2e/supply_cap.py` (a real node and openampd; its docstring has the command) for a change to
 issuance, minting or the supply cap, and `e2e/verifier_token.py` for a change to network-enforced
 issuance or the verifier asset's token, `e2e/damp_two_phase.py` for a change to a snapshot or
