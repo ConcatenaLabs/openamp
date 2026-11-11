@@ -245,6 +245,16 @@ func (s *Server) htlcClaim(tx *elements.Tx, spent []*elements.SpentOutput, asset
 	if err != nil {
 		return nil, nil, 0, err
 	}
+	// Every output plain: a proof or a nonce on an explicit output makes the
+	// node refuse the claim (bad-txns-in-ne-out), and a co-sign of a claim
+	// that cannot be mined only puts the secret where it does nobody good
+	// (PV5 S17).
+	tx.NormalizeWitness()
+	for i, out := range tx.Out {
+		if !tx.OutWit[i].IsNull() || !isNullNonce(out.Nonce) {
+			return nil, nil, 0, refuseCode("htlc", "output %d of a claim carries a proof or a nonce: every output of a claim is plain", i)
+		}
+	}
 	assetCommit := hex.EncodeToString(explicitAssetCommit(asset.ID))
 	buyerSpk := hex.EncodeToString(buyerTree.ScriptPubKey())
 	paid := 0
@@ -338,3 +348,6 @@ func (s *Server) handleHTLCClaim(w http.ResponseWriter, tx *elements.Tx, spent [
 		"cutoff": cutoff.Unix(),
 	})
 }
+
+// isNullNonce: an output's nonce is absent (one zero byte, or empty).
+func isNullNonce(n []byte) bool { return len(n) == 0 || (len(n) == 1 && n[0] == 0) }

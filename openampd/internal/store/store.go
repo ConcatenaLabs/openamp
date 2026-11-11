@@ -256,6 +256,12 @@ type TransferRecord struct {
 	// Expires (Unix seconds) applies only to an unconfirmed record written
 	// without Inputs, before they were kept: it stops counting then.
 	Expires int64 `json:"expires,omitempty"`
+	// Released is the height of the block whose spend made this unconfirmed
+	// record impossible (an input spent elsewhere, an HTLC refunded or
+	// clawed); 0 while it is not. A released record counts for nothing, and
+	// is kept until no fork can undo that block: a fork at or below it makes
+	// the record pending again.
+	Released int64 `json:"released,omitempty"`
 }
 
 // HTLC is a swap HTLC of a restricted asset: its seller's coin, waiting

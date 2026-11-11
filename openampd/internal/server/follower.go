@@ -115,35 +115,51 @@ func (s *Server) followTick() error {
 		st.Height = tip
 		st.RecentBlocks = recent
 		for i := range st.Transfers {
-			rec := &st.Transfers[i]
-			// A tree transfer happened off the chain: it keeps the height it
-			// was approved at, whatever the chain does.
-			if rec.Kind == "tree" {
-				continue
-			}
-			if forkAt >= 0 && rec.Height >= forkAt {
-				rec.Height = -1
-			}
-			if h, ok := confirmed[rec.Txid]; ok {
-				rec.Height = h
-			}
-			settleBySpends(rec, spends)
-			// Records written before inputs were kept get the expiry they
-			// would have had (#49).
-			if rec.Height < 0 && len(rec.Inputs) == 0 && rec.Expires == 0 {
-				rec.Expires = time.Now().Add(pendingTTL).Unix()
-			}
+			followRecord(&st.Transfers[i], forkAt, confirmed, spends)
 		}
-		kept := st.Transfers[:0]
-		for _, rec := range st.Transfers {
-			if rec.Kind != "released" {
-				kept = append(kept, rec)
-			}
-		}
-		st.Transfers = kept
+		st.Transfers = pruneReleased(st.Transfers, tip)
 		followTree(st, forkAt, confirmed)
 		return nil
 	})
+}
+
+// followRecord brings one record up to the chain: a fork at or below its
+// height or its release makes it pending again, and the blocks scanned from
+// the fork settle it once more.
+func followRecord(rec *store.TransferRecord, forkAt int64, confirmed map[string]int64, spends map[string]blockSpend) {
+	// A tree transfer happened off the chain: it keeps the height it was
+	// approved at, whatever the chain does.
+	if rec.Kind == "tree" {
+		return
+	}
+	if forkAt >= 0 && rec.Height >= forkAt {
+		rec.Height = -1
+	}
+	if forkAt >= 0 && rec.Released >= forkAt {
+		rec.Released = 0
+	}
+	if h, ok := confirmed[rec.Txid]; ok {
+		rec.Height, rec.Released = h, 0
+	}
+	settleBySpends(rec, spends)
+	// Records written before inputs were kept get the expiry they would have
+	// had (#49).
+	if rec.Height < 0 && len(rec.Inputs) == 0 && rec.Expires == 0 {
+		rec.Expires = time.Now().Add(pendingTTL).Unix()
+	}
+}
+
+// pruneReleased drops released records once their release is deeper than any
+// fork the follower can see (recentBlockWindow).
+func pruneReleased(recs []store.TransferRecord, tip int64) []store.TransferRecord {
+	kept := recs[:0]
+	for _, rec := range recs {
+		if rec.Released > 0 && rec.Released <= tip-recentBlockWindow {
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	return kept
 }
 
 type blockSpend struct {
@@ -167,9 +183,10 @@ const htlcClaimWitness = 5
 //     it impossible, and it is released. Until then it counts: a signature
 //     never expires (#65).
 //
-// A released record is marked with the kind "released" and dropped.
+// A released record keeps the height of the spend that released it, so a
+// fork that undoes that spend makes it pending again (followRecord).
 func settleBySpends(rec *store.TransferRecord, spends map[string]blockSpend) {
-	if rec.Height >= 0 || rec.Kind == "tree" {
+	if rec.Height >= 0 || rec.Kind == "tree" || rec.Released > 0 {
 		return
 	}
 	if rec.Kind == "htlc-claim" {
@@ -177,14 +194,14 @@ func settleBySpends(rec *store.TransferRecord, spends map[string]blockSpend) {
 			if sp.witness == htlcClaimWitness {
 				rec.Height, rec.Txid = sp.height, sp.txid
 			} else {
-				rec.Kind = "released"
+				rec.Released = sp.height
 			}
 		}
 		return
 	}
 	for _, in := range rec.Inputs {
 		if sp, ok := spends[in]; ok && sp.txid != rec.Txid {
-			rec.Kind = "released"
+			rec.Released = sp.height
 			return
 		}
 	}

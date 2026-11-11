@@ -172,6 +172,11 @@ func TestHTLCClaim(t *testing.T) {
 		"an input that is no HTLC":  {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []htlcInput{{Input: 1}}},
 		"two HTLCs named":           {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []htlcInput{{Input: 0}, {Input: 1}}},
 		"another coin of the asset": {claimTx(f.out(buyerSpk, 1000)), []*elements.SpentOutput{spentHTLC, {Asset: spentHTLC.Asset, Value: elements.ExplicitValue(7), ScriptPubKey: sellerSpk}}, f.seller, ins},
+		// PV5 S17: proofs or a nonce on an explicit output make the node
+		// refuse the claim (bad-txns-in-ne-out).
+		"a range proof on an output": {withOutWit(claimTx(f.out(buyerSpk, 1000)), 0, nil, []byte{1, 2, 3}), spent, f.seller, ins},
+		"a surjection proof":         {withOutWit(claimTx(f.out(buyerSpk, 1000)), 0, []byte{4, 5}, nil), spent, f.seller, ins},
+		"a nonce on an output":       {withNonce(claimTx(f.out(buyerSpk, 1000)), 0), spent, f.seller, ins},
 	} {
 		if _, _, _, err := f.s.htlcClaim(c.tx, c.spent, f.asset, c.seller, c.ins); err == nil {
 			t.Fatalf("%s: claim accepted", name)
@@ -285,7 +290,7 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	// seller, and the record is released.
 	r = claimRec()
 	settleBySpends(&r, map[string]blockSpend{op: {txid: "bb", height: 499, witness: 2}})
-	if r.Kind != "released" {
+	if r.Released != 499 || r.Kind != "htlc-claim" {
 		t.Fatalf("a refund did not release the claim: %+v", r)
 	}
 	// A mined claim is never replaced by a re-claim, nor co-signed again.
@@ -372,12 +377,58 @@ func TestAnUnminedRecordCountsUntilItsInputsGo(t *testing.T) {
 		t.Fatal("an unmined record with inputs stopped counting with time")
 	}
 	settleBySpends(&r, map[string]blockSpend{"bb:1": {txid: "t1", height: 499}})
-	if r.Kind == "released" {
+	if r.Released != 0 {
 		t.Fatal("released when its own transaction spent the input")
 	}
 	settleBySpends(&r, map[string]blockSpend{"aa:0": {txid: "t2", height: 499}})
-	if r.Kind != "released" {
+	if r.Released != 499 || velocityCounts(r, 500, 100, 1<<40) {
 		t.Fatal("not released when another transaction spent an input")
+	}
+}
+
+// PV5 R1 and R3 (re-check): a release follows the chain back. A fork that
+// undoes the releasing spend makes the record pending again, and the
+// transaction mined in its place counts.
+func TestAReleaseFollowsTheChainBack(t *testing.T) {
+	// R3: a plain co-sign S1, released by the holder's self-transfer at 499.
+	r := store.TransferRecord{Txid: "s1", Atoms: 100, Height: -1, Inputs: []string{"aa:0"}}
+	followRecord(&r, -1, nil, map[string]blockSpend{"aa:0": {txid: "self", height: 499}})
+	if r.Released != 499 || velocityCounts(r, 500, 100, 0) {
+		t.Fatalf("S1 not released by the self-transfer: %+v", r)
+	}
+	// The block at 499 is replaced, and S1 is mined at 500 on the new branch.
+	followRecord(&r, 499, map[string]int64{"s1": 500}, map[string]blockSpend{"aa:0": {txid: "s1", height: 500}})
+	if r.Released != 0 || r.Height != 500 || !velocityCounts(r, 500, 100, 0) {
+		t.Fatalf("S1 mined after the fork is not counted: %+v", r)
+	}
+	// A fork that undoes the release but mines nothing in its place: pending
+	// again, and counting.
+	r = store.TransferRecord{Txid: "s2", Atoms: 100, Height: -1, Inputs: []string{"bb:0"}, Released: 499}
+	followRecord(&r, 498, nil, nil)
+	if r.Released != 0 || !velocityCounts(r, 500, 100, 0) {
+		t.Fatalf("a record whose release was undone does not count: %+v", r)
+	}
+	// A fork above the release changes nothing.
+	r = store.TransferRecord{Txid: "s3", Atoms: 100, Height: -1, Inputs: []string{"cc:0"}, Released: 499}
+	followRecord(&r, 500, nil, nil)
+	if r.Released != 499 {
+		t.Fatalf("a fork above the release undid it: %+v", r)
+	}
+	// R1: an HTLC claim released by the refund at 499; the fork mines the
+	// held claim C (a claim's witness) in its place.
+	c := store.TransferRecord{Txid: "c", Atoms: 100, Height: -1, Kind: "htlc-claim", ID: "h:0", Inputs: []string{"h:0", "p:1"}}
+	followRecord(&c, -1, nil, map[string]blockSpend{"h:0": {txid: "refund", height: 499, witness: 2}})
+	if c.Released != 499 {
+		t.Fatalf("the refund did not release the claim: %+v", c)
+	}
+	followRecord(&c, 499, map[string]int64{"c": 501}, map[string]blockSpend{"h:0": {txid: "c", height: 501, witness: htlcClaimWitness}})
+	if c.Height != 501 || c.Released != 0 || !velocityCounts(c, 501, 100, 0) {
+		t.Fatalf("the claim mined after the fork is not counted: %+v", c)
+	}
+	// Released records go once no fork can reach them.
+	recs := pruneReleased([]store.TransferRecord{{Txid: "old", Released: 100}, {Txid: "new", Released: 450}, {Txid: "live", Height: 90}}, 500)
+	if len(recs) != 2 || recs[0].Txid != "new" || recs[1].Txid != "live" {
+		t.Fatalf("pruned %+v", recs)
 	}
 }
 
@@ -409,4 +460,15 @@ func (stubPolicySigner) Adopt(ref, assetID string) error              { return n
 func (stubPolicySigner) PolicyPubKey(assetID string) ([32]byte, bool) { return [32]byte{}, true }
 func (stubPolicySigner) SignPolicy(assetID string, sighash [32]byte, ctx PolicyContext) ([]byte, error) {
 	return make([]byte, 64), nil
+}
+
+func withOutWit(tx *elements.Tx, i int, surj, rp []byte) *elements.Tx {
+	tx.NormalizeWitness()
+	tx.OutWit[i] = &elements.TxOutWitness{Surjection: surj, Rangeproof: rp}
+	return tx
+}
+
+func withNonce(tx *elements.Tx, i int) *elements.Tx {
+	tx.Out[i].Nonce = append([]byte{0x02}, make([]byte, 32)...)
+	return tx
 }
