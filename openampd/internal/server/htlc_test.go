@@ -225,7 +225,7 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	f.s.signer = stubPolicySigner{}
 	cosign := func(tx *elements.Tx) int {
 		w := httptest.NewRecorder()
-		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}})
+		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
 		if w.Code != 200 {
 			t.Logf("co-sign: %d %s", w.Code, w.Body.String())
 		}
