@@ -360,10 +360,10 @@ type State struct {
 	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
 	// seller's coin until claimed. Absent on older documents; initialised on load.
 	Escrows      map[string]*Escrow `json:"escrows,omitempty"`
-	RecentBlocks  []string                 `json:"recent_blocks"` // newest last
-	Height        int64                    `json:"height"`
-	LogHead       string                   `json:"log_head"`
-	LogSeq        uint64                   `json:"log_seq"`
+	RecentBlocks []string           `json:"recent_blocks"` // newest last
+	Height       int64              `json:"height"`
+	LogHead      string             `json:"log_head"`
+	LogSeq       uint64             `json:"log_seq"`
 }
 
 type Store struct {
