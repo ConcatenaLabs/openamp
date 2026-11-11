@@ -90,7 +90,7 @@ func TestSwapHTLCVectors(t *testing.T) {
 		}
 		checkTree(t, name, tree, v, leaves)
 	}
-	for _, name := range []string{"pot_v0", "pot_v1"} {
+	for _, name := range []string{"pot_v1", "pot_v1_b"} {
 		v := vs[name]
 		prog, _ := hex.DecodeString(v.SellerProgram)
 		tree, err := FeePotTree(FeePotTerms{
@@ -120,9 +120,15 @@ func TestSwapHTLCRefusals(t *testing.T) {
 	if _, err := SwapHTLCTree(z); err == nil {
 		t.Fatal("an empty HTLC was accepted")
 	}
-	pot := FeePotTerms{TSeq: MinTimeLock, SellerVersion: 0, SellerProgram: make([]byte, 20), Value: 1}
+	pot := FeePotTerms{TSeq: MinTimeLock, SellerVersion: 1, SellerProgram: make([]byte, 32), Value: 1}
 	if _, err := FeePotTree(pot); err != nil {
-		t.Fatalf("a v0 payout: %v", err)
+		t.Fatalf("a v1 payout: %v", err)
+	}
+	// PV5 P1 (#66): never a v0 payout, which may be a staking controller's.
+	for _, v0 := range [][]byte{make([]byte, 20), make([]byte, 32)} {
+		if _, err := FeePotTree(FeePotTerms{TSeq: MinTimeLock, SellerVersion: 0, SellerProgram: v0, Value: 1}); err == nil {
+			t.Fatalf("a v0 payout of %d bytes was accepted", len(v0))
+		}
 	}
 	for _, bad := range []FeePotTerms{
 		{TSeq: MinTimeLock - 1, SellerVersion: 0, SellerProgram: make([]byte, 20), Value: 1},

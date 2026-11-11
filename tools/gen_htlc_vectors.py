@@ -71,7 +71,7 @@ def main():
             "hash": h.hex(), "buyer_x": buyer.hex(), "policy_x": policy.hex(),
             "issuer_x": issuer.hex() if claw else "", "t_seq": t_seq,
             "seller_program": seller_prog.hex(), "asset": asset.hex(), "value": value})
-    for name, version, prog in (("pot_v0", 0, det(6, 20)), ("pot_v1", 1, det(7))):
+    for name, version, prog in (("pot_v1", 1, det(7)), ("pot_v1_b", 1, det(6))):
         claim = CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY, buyer, OP_CHECKSIG])
         refund = CScript([1_794_423_273, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + home(version, prog, bytes(range(32, 64)), 5000))
         tap = taproot_construct(NUMS, [("claim", claim), ("refund", refund)])
