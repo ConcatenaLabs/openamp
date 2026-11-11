@@ -150,7 +150,7 @@ func TestHTLCClaim(t *testing.T) {
 	spentHTLC := &elements.SpentOutput{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: htlcSpk}
 	spentFee := &elements.SpentOutput{Asset: elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32))), Value: elements.ExplicitValue(5000), ScriptPubKey: feeSpk}
 	claimTx := func(outs ...*elements.TxOut) *elements.Tx {
-		return &elements.Tx{Version: 2, In: []*elements.TxIn{{}, {}}, Out: outs}
+		return &elements.Tx{Version: 2, In: []*elements.TxIn{{Sequence: 0xffffffff}, {Sequence: 0xffffffff}}, Out: outs}
 	}
 	spent := []*elements.SpentOutput{spentHTLC, spentFee}
 	ins := []htlcInput{{Input: 0}}
@@ -216,7 +216,7 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	}
 	claim := func(fee uint64) *elements.Tx {
 		feeAsset := elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32)))
-		return &elements.Tx{Version: 2, In: []*elements.TxIn{{}, {}}, Out: []*elements.TxOut{
+		return &elements.Tx{Version: 2, In: []*elements.TxIn{{Sequence: 0xffffffff}, {Sequence: 0xffffffff}}, Out: []*elements.TxOut{
 			f.out(buyerSpk, 1000),
 			{Asset: feeAsset, Value: elements.ExplicitValue(5000 - fee), Nonce: elements.NullNonce(), ScriptPubKey: spent[1].ScriptPubKey},
 			{Asset: feeAsset, Value: elements.ExplicitValue(fee), Nonce: elements.NullNonce()},
@@ -254,12 +254,41 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	err = f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 101}, 0, 500)
 	wantRefusal(t, err, "velocity")
 
-	// The claim was never mined. At T_seq it stops counting.
+	// The claim was never mined: it counts at T_seq and after, for a
+	// signature never expires (PV5 V3, #65).
 	f.now = time.Unix(int64(f.tSeq), 0)
-	if err := f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 1100}, 0, 500); err != nil {
-		t.Fatalf("an unmined claim still counts after T_seq: %v", err)
+	err = f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 101}, 0, 500)
+	wantRefusal(t, err, "velocity")
+	claimRec := func() store.TransferRecord {
+		var r store.TransferRecord
+		f.s.st.View(func(x *store.State) {
+			for _, t := range x.Transfers {
+				if t.Kind == "htlc-claim" {
+					r = t
+				}
+			}
+		})
+		return r
 	}
-	// Mined late after all: counted again, at its height.
+	op := claimRec().ID
+	if op != outpointString(claim(100).In[0].Prevout) {
+		t.Fatalf("the claim record is keyed %q, not on the HTLC's outpoint", op)
+	}
+	// PV5 V2: a superseded claim mined (another txid, a claim's witness) is
+	// the claim, counted at its height.
+	r := claimRec()
+	settleBySpends(&r, map[string]blockSpend{op: {txid: "aa", height: 499, witness: htlcClaimWitness}})
+	if r.Height != 499 || r.Txid != "aa" || r.Kind != "htlc-claim" {
+		t.Fatalf("a mined claim of the HTLC was not counted: %+v", r)
+	}
+	// The HTLC's refund instead (a two-item witness): nothing moved from the
+	// seller, and the record is released.
+	r = claimRec()
+	settleBySpends(&r, map[string]blockSpend{op: {txid: "bb", height: 499, witness: 2}})
+	if r.Kind != "released" {
+		t.Fatalf("a refund did not release the claim: %+v", r)
+	}
+	// A mined claim is never replaced by a re-claim, nor co-signed again.
 	if err := f.st.Update(func(x *store.State) error {
 		for i := range x.Transfers {
 			if x.Transfers[i].Kind == "htlc-claim" {
@@ -270,8 +299,86 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 101}, 0, 500)
-	wantRefusal(t, err, "velocity")
+	if code := cosign(claim(400)); code != 403 {
+		t.Fatalf("a claim of an already claimed HTLC: %d", code)
+	}
+	if claimRec().Height != 499 {
+		t.Fatal("the mined claim's record was replaced")
+	}
+}
+
+// PV5 V1 (#65): two HTLCs of identical terms share a script, not an outpoint;
+// claiming the second never replaces the first one's record.
+func TestTwinHTLCClaimsKeepTheirRecords(t *testing.T) {
+	f := newHTLCFixture(t, store.Rules{VelocityMaxAtoms: 10_000, VelocityWindowBlocks: 100})
+	f.s.signer = stubPolicySigner{}
+	_, recs, err := f.s.admitHTLCOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.Update(func(x *store.State) error { x.Height = 500; x.HTLCs[recs[0].SPK] = recs[0]; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	spk, _ := hex.DecodeString(recs[0].SPK)
+	buyerSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.buyer, f.asset))
+	fee := elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32)))
+	spent := []*elements.SpentOutput{
+		{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: spk},
+		{Asset: fee, Value: elements.ExplicitValue(5000), ScriptPubKey: []byte{0x51, 0x20, 1}},
+	}
+	claimOf := func(vout uint32) *elements.Tx {
+		return &elements.Tx{Version: 2, In: []*elements.TxIn{
+			{Prevout: elements.OutPoint{N: vout}, Sequence: 0xffffffff}, {Prevout: elements.OutPoint{N: 9}, Sequence: 0xffffffff}},
+			Out: []*elements.TxOut{f.out(buyerSpk, 1000), {Asset: fee, Value: elements.ExplicitValue(5000), Nonce: elements.NullNonce()}}}
+	}
+	for _, vout := range []uint32{0, 1} {
+		w := httptest.NewRecorder()
+		f.s.handleHTLCClaim(w, claimOf(vout), spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
+		if w.Code != 200 {
+			t.Fatalf("claim of twin %d: %d %s", vout, w.Code, w.Body.String())
+		}
+	}
+	n := 0
+	f.s.st.View(func(x *store.State) {
+		for _, r := range x.Transfers {
+			if r.Kind == "htlc-claim" {
+				n++
+			}
+		}
+	})
+	if n != 2 {
+		t.Fatalf("%d claim records for two twin HTLCs, want 2", n)
+	}
+	// PV5 S16 (#67): a claim with a lock time, or a non-final input, is
+	// refused before anything is signed.
+	lt := claimOf(2)
+	lt.LockTime = f.tSeq
+	nf := claimOf(3)
+	nf.In[1].Sequence = 0xfffffffe
+	for name, tx := range map[string]*elements.Tx{"a lock time": lt, "a non-final input": nf} {
+		w := httptest.NewRecorder()
+		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
+		if w.Code != 403 {
+			t.Fatalf("a claim with %s: %d", name, w.Code)
+		}
+	}
+}
+
+// PV5 V3 (#65): a held co-sign counts until one of its inputs is spent by
+// another transaction, not until a time.
+func TestAnUnminedRecordCountsUntilItsInputsGo(t *testing.T) {
+	r := store.TransferRecord{Txid: "t1", Height: -1, Inputs: []string{"aa:0", "bb:1"}}
+	if !velocityCounts(r, 500, 100, 1<<40) {
+		t.Fatal("an unmined record with inputs stopped counting with time")
+	}
+	settleBySpends(&r, map[string]blockSpend{"bb:1": {txid: "t1", height: 499}})
+	if r.Kind == "released" {
+		t.Fatal("released when its own transaction spent the input")
+	}
+	settleBySpends(&r, map[string]blockSpend{"aa:0": {txid: "t2", height: 499}})
+	if r.Kind != "released" {
+		t.Fatal("not released when another transaction spent an input")
+	}
 }
 
 func TestVelocityCountsUnconfirmedUntilExpiry(t *testing.T) {
@@ -282,6 +389,7 @@ func TestVelocityCountsUnconfirmedUntilExpiry(t *testing.T) {
 	}{
 		{store.TransferRecord{Height: 450}, true},
 		{store.TransferRecord{Height: 400}, false},
+		{store.TransferRecord{Height: -1, Inputs: []string{"aa:0"}, Expires: now - 1}, true},
 		{store.TransferRecord{Height: -1, Expires: now + 1}, true},
 		{store.TransferRecord{Height: -1, Expires: now}, false},
 		{store.TransferRecord{Height: -1}, true},

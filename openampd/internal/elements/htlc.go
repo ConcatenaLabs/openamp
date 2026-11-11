@@ -89,8 +89,8 @@ type FeePotTerms struct {
 	Hash          [32]byte
 	BuyerX        [32]byte
 	TSeq          uint32
-	SellerVersion byte   // the seller's payout address: witness version 0 or 1
-	SellerProgram []byte // and program (20 or 32 bytes for v0, 32 for v1)
+	SellerVersion byte   // the seller's payout address: witness version 1
+	SellerProgram []byte // and its 32-byte program
 	FeeAsset      [32]byte
 	Value         uint64
 }
@@ -126,11 +126,12 @@ func FeePotTree(t FeePotTerms) (*TapTree, error) {
 	if t.TSeq < MinTimeLock {
 		return nil, fmt.Errorf("T_seq %d is a height: every swap lock is a time (>= %d)", t.TSeq, MinTimeLock)
 	}
-	switch {
-	case t.SellerVersion == 0 && (len(t.SellerProgram) == 20 || len(t.SellerProgram) == 32):
-	case t.SellerVersion == 1 && len(t.SellerProgram) == 32:
-	default:
-		return nil, fmt.Errorf("the pot's payout must be a v0 or v1 witness program")
+	// A v1 program only, as the HTLC refund and every SeqDEX credit: a v0
+	// payout can be a staking controller's P2WPKH, which a split pool's claim
+	// counts as its own payment to that delegator, so a stranger could take
+	// the delegator's share with the pot's refund (#66).
+	if t.SellerVersion != 1 || len(t.SellerProgram) != 32 {
+		return nil, fmt.Errorf("the pot's payout must be a v1 (32-byte) witness program")
 	}
 	if t.Value == 0 {
 		return nil, fmt.Errorf("a fee pot of zero atoms")

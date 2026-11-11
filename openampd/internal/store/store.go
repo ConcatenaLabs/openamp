@@ -247,11 +247,14 @@ type TransferRecord struct {
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
 	Kind      string `json:"kind,omitempty"`
-	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the HTLC, for kind "htlc-claim"
-	// Expires (Unix seconds): an unconfirmed record stops counting toward the
-	// sender's velocity at this time. A co-signed transaction that is never
-	// broadcast must not hold the sender's allowance forever; one broadcast
-	// later is counted again, at its height, once the follower sees it mined.
+	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the HTLC's outpoint (txid:vout), for kind "htlc-claim"
+	// Inputs are the transaction's input outpoints (txid:vout). An unconfirmed
+	// record counts toward the sender's velocity until one of them is spent
+	// in a block by another transaction, which makes this one impossible: a
+	// signature never expires, so neither does its record (#49, #65).
+	Inputs []string `json:"inputs,omitempty"`
+	// Expires (Unix seconds) applies only to an unconfirmed record written
+	// without Inputs, before they were kept: it stops counting then.
 	Expires int64 `json:"expires,omitempty"`
 }
 
