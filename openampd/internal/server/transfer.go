@@ -26,10 +26,10 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 }
 
 // checkTransferAdmitting is checkTransfer with admitted outputs beside the
-// registered enclaves: scripts (hex) of tree outputs the caller has proved are
-// enclave-1 boards of the asset's tree, each paying the holder it maps to
-// (tree.go, admitTreeOutputs). Such an output is that holder's for every rule,
-// exactly as an output at the holder's enclave is.
+// registered enclaves: scripts (hex) of outputs the caller has proved are a
+// holder's own (a swap HTLC, a gated order), each mapped to that holder. Such
+// an output is that holder's for every rule, exactly as an output at the
+// holder's enclave is.
 func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
 	admitted map[string]*store.User) error {
 	return s.checkTransferExcept(tx, asset, sender, atomsOut, admitted, "")
@@ -101,12 +101,10 @@ func (s *Server) checkTransferExcept(tx *elements.Tx, asset *store.Asset, sender
 	return s.checkRulesExcept(asset, sender, recipients, burned, height, reclaim)
 }
 
-// checkRules is the asset's policy over one movement, wherever it happens: on
-// the chain (checkTransferAdmitting) or between leaves of the asset's tree
-// (tree.go). recipients is what each other holder receives, burned what is
-// destroyed, height the chain's height the rules are judged at. Everything a
-// holder holds counts, in its enclave and in live leaves alike
-// (holderBalances).
+// checkRules is the asset's policy over one movement (checkTransferAdmitting).
+// recipients is what each other holder receives, burned what is destroyed,
+// height the chain's height the rules are judged at. Everything a holder holds
+// counts (holderBalances).
 func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64) error {
 	return s.checkRulesExcept(asset, sender, recipients, burned, height, "")
 }
@@ -345,7 +343,7 @@ func explicitAssetCommit(displayID string) []byte {
 }
 
 // holderBalances scans confirmed holdings for every account that could hold the
-// asset, and adds what each holds in live leaves of the asset's tree. It is the
+// asset. It is the
 // single read behind the ownership report, the circulating supply figure and
 // every rule that reads a balance.
 //
@@ -440,15 +438,6 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 		return nil, scanErr
 	}
 	balances := map[string]uint64{}
-	// What holders hold in live leaves of the asset's tree. Their coins sit on
-	// the chain at boards and tree outputs, which are no enclave, so without the
-	// register the scan below would miss them and every rule reading a balance
-	// would read too little.
-	s.st.View(func(st *store.State) {
-		for aid, atoms := range store.LiveTreeAtoms(st, asset.ID) {
-			balances[aid] += atoms
-		}
-	})
 	if len(spks) == 0 {
 		return balances, nil
 	}
@@ -1175,9 +1164,10 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		Asset     string `json:"asset"`
 		SenderAID string `json:"sender_aid"`
 		Inputs    []int  `json:"inputs"`
-		// TreeOutputs names outputs that are boards of the asset's tree, each
-		// with its board record (tree.go): admitted as their holder's.
-		TreeOutputs []treeOutput `json:"tree_outputs,omitempty"`
+		// TreeOutputs is kept only to refuse it by name: a request that
+		// still names boards of an asset's tree gets EnclaveRetired, never a
+		// co-sign that silently leaves them out.
+		TreeOutputs json.RawMessage `json:"tree_outputs,omitempty"`
 		// HTLCOutputs names swap HTLCs the sender locks its coin in
 		// (htlc.go): admitted as the sender's own. HTLCInputs names the one
 		// HTLC a claim spends; sender_aid is then the HTLC's seller.
@@ -1207,17 +1197,21 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		httpErr(w, 400, "%v", err)
 		return
 	}
+	if req.TreeOutputs != nil {
+		httpErr(w, 400, "tree_outputs: %s", EnclaveRetired)
+		return
+	}
 	if len(req.HTLCInputs) > 0 && req.Broadcast {
 		httpErr(w, 400, "a claim is broadcast by its buyer, who adds the secret: broadcast is refused for htlc_inputs")
 		return
 	}
 	if len(req.OrderInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.HTLCInputs) > 0 ||
-		len(req.TreeOutputs) > 0 || len(req.OrderOutputs) > 0) {
-		httpErr(w, 400, "a fill spends one order and nothing else of the asset: no inputs, htlc_*, tree_outputs or order_outputs beside order_inputs")
+		len(req.OrderOutputs) > 0) {
+		httpErr(w, 400, "a fill spends one order and nothing else of the asset: no inputs, htlc_* or order_outputs beside order_inputs")
 		return
 	}
-	if len(req.HTLCInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.TreeOutputs) > 0) {
-		httpErr(w, 400, "a claim spends one HTLC and nothing else: no inputs, htlc_outputs or tree_outputs beside htlc_inputs")
+	if len(req.HTLCInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0) {
+		httpErr(w, 400, "a claim spends one HTLC and nothing else: no inputs or htlc_outputs beside htlc_inputs")
 		return
 	}
 	senderTree, sender, asset, err := s.enclaveFor(req.SenderAID, req.Asset)
@@ -1318,21 +1312,6 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		}
 	}
 	var admitted map[string]*store.User
-	var boards []*store.TreeLeaf
-	if len(req.TreeOutputs) > 0 {
-		admitted, boards, err = s.admitTreeOutputs(tx, asset, req.TreeOutputs)
-		if err == errNoTreeTool {
-			httpErr(w, 501, noTreeTool)
-			return
-		}
-		if err != nil {
-			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
-				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
-			}
-			treeErr(w, err)
-			return
-		}
-	}
 	var htlcs []*store.HTLC
 	if len(req.HTLCOutputs) > 0 {
 		var escAdmitted map[string]*store.User
@@ -1493,10 +1472,6 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 			s.st.AppendLog("order-place", map[string]any{"txid": rawTxid, "vout": o.Vout, "maker": o.MakerAID,
 				"asset": asset.ID, "expiry": o.Expiry, "order": o.SPK})
 		}
-	}
-	if err := s.registerBoards(boards); err != nil {
-		httpErr(w, 500, "register the boards: %v", err)
-		return
 	}
 	if req.Broadcast {
 		httpJSON(w, map[string]any{"txid": rawTxid})

@@ -118,7 +118,6 @@ func (s *Server) followTick() error {
 			followRecord(&st.Transfers[i], forkAt, confirmed, spends)
 		}
 		st.Transfers = pruneReleased(st.Transfers, tip)
-		followTree(st, forkAt, confirmed)
 		return nil
 	})
 }
@@ -127,11 +126,6 @@ func (s *Server) followTick() error {
 // height or its release makes it pending again, and the blocks scanned from
 // the fork settle it once more.
 func followRecord(rec *store.TransferRecord, forkAt int64, confirmed map[string]int64, spends map[string]blockSpend) {
-	// A tree transfer happened off the chain: it keeps the height it was
-	// approved at, whatever the chain does.
-	if rec.Kind == "tree" {
-		return
-	}
 	if forkAt >= 0 && rec.Height >= forkAt {
 		rec.Height = -1
 	}
@@ -186,7 +180,7 @@ const htlcClaimWitness = 5
 // A released record keeps the height of the spend that released it, so a
 // fork that undoes that spend makes it pending again (followRecord).
 func settleBySpends(rec *store.TransferRecord, spends map[string]blockSpend) {
-	if rec.Height >= 0 || rec.Kind == "tree" || rec.Released > 0 {
+	if rec.Height >= 0 || rec.Released > 0 {
 		return
 	}
 	if rec.Kind == "htlc-claim" {
