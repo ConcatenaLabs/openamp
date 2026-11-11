@@ -114,8 +114,10 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 **`POST /v1/cosign`** for self-built transactions (the sender attaches its own ordinary-asset fee). Self-built flows are transparent-only: a transaction containing blinded outputs, or claiming a blinded enclave coin as an input, is refused whatever the asset — per-transfer confidentiality lives in the hosted flow. Body:
 
 ```json
-{"tx": "<tx hex>", "asset": "<id>", "sender_aid": "...", "inputs": [0, 1]}
+{"tx": "<tx hex>", "asset": "<id>", "sender_aid": "...", "inputs": [0, 1], "sender_sig": "<hex>"}
 ```
+
+`sender_sig` is the sender's BIP340 signature, by its enclave key, over `tagged_hash("openamp-cosign-v1", txid)`, where `txid` is the 32 bytes of the displayed txid. A co-sign hands the caller the policy signature to broadcast whenever it likes, so only the sender may ask for one: without this signature, or with anyone else's, the request is refused (403, code `sender_sig`) before anything else is judged. A counterparty holding the sender's input signature cannot get the policy signature this way; a trade goes through the broadcast below, which enforces the sender's expiry. A claim of a swap HTLC needs no `sender_sig` (see "Claiming").
 
 `inputs` are the indices spending the sender's enclave outputs. The server checks that each claimed input really is the sender's enclave output, that no unclaimed input spends this asset's enclaves, and runs the same policy engine. Response (the caller assembles the witnesses and broadcasts):
 
@@ -165,7 +167,7 @@ claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
 **Locking.** The seller co-signs its lock transaction through `POST /v1/cosign`, naming each HTLC output:
 
 ```json
-{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0],
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0], "sender_sig": "<hex>",
  "htlc_outputs": [{"output": 0, "buyer_aid": "<buyer>", "hash": "<H hex>", "t_seq": 1794432408}]}
 ```
 
@@ -182,7 +184,7 @@ The HTLC then counts as the seller's own coin in every balance, holder count and
 {"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "htlc_inputs": [{"input": 0}]}
 ```
 
-A claim spends exactly one HTLC and no other coin of the asset. It pays the HTLC's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
+The request needs no `sender_sig`: it comes from the buyer, and only the buyer can complete the claim, with its key and the secret. A claim spends exactly one HTLC and no other coin of the asset. It pays the HTLC's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
 
 A claim may be requested again, for a higher fee or after a stuck transaction. A re-claim is judged without the HTLC's earlier claim, which is the same movement, and replaces its velocity record. A claim record that is never mined stops counting toward the seller's velocity at `T_seq`.
 

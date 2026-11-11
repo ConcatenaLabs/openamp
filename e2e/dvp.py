@@ -16,7 +16,11 @@ and the payment to the seller out. Then:
   2. POST /v1/cosign with "broadcast": true refuses an expiry signature that is
      not the seller's (400), an expiry already past (403 "expired"), and a
      seller signature that is not over the input (409, nothing in the mempool);
-  3. with the seller's own signature and a future expiry, openampd completes
+  3. a plain co-sign of the same trade, asked without the seller's own
+     signature over it or with the buyer's, is refused (403 "sender_sig"): a
+     buyer holding the seller's input signature cannot get the policy
+     signature outside the broadcast, which enforces the seller's expiry;
+  4. with the seller's own signature and a future expiry, openampd completes
      the witness and broadcasts the trade itself; it is mined, and the buyer
      holds the asset and the seller the payment.
 """
@@ -356,7 +360,19 @@ class DvPE2E(BitcoinTestFramework):
         assert node.getrawmempool() == [], node.getrawmempool()
         self.rec("broadcast_refusals", "wrong expiry signer 400, expired 403, wrong input signature 409; mempool empty")
 
-        # 3. the trade, completed and broadcast by openampd
+        # 3. the attack of proof review PV4 (D1): the buyer holds the seller's
+        # input signature after the seller's expiry has passed, and asks for a
+        # plain co-sign instead of the broadcast. Refused: only the seller may
+        # ask for a plain co-sign, by its own signature over the transaction.
+        def cosign_sig(key):
+            return sign_schnorr(key, tagged("openamp-cosign-v1", bytes.fromhex(tx.hash))).hex()
+        st, body = self.api("POST", "/v1/cosign", req, expect=None)
+        assert st == 403 and "sender_sig" in body["error"], body
+        st, body = self.api("POST", "/v1/cosign", dict(req, sender_sig=cosign_sig(keys["buyer"])), expect=None)
+        assert st == 403 and "sender_sig" in body["error"], body
+        self.rec("plain_cosign_without_the_seller", body)
+
+        # 4. the trade, completed and broadcast by openampd
         _, body = self.api("POST", "/v1/cosign", dict(breq, expires_at=later, expiry_sig=expiry_sig(keys["seller"], later)))
         assert body["txid"] == tx.hash, body
         self.mine()

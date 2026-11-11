@@ -134,6 +134,14 @@ def fill_leaf(asset_a, asset_b, num, den, min_lot, maker_prog):
     return s
 
 
+def sender_sig(key, tx):
+    """The sender's request for a plain co-sign: BIP340 over
+    tagged_hash("openamp-cosign-v1", txid as displayed)."""
+    tx.rehash()
+    t = sha256(b"openamp-cosign-v1")
+    return sign_schnorr(key, sha256(t + t + bytes.fromhex(tx.hash))).hex()
+
+
 def control(tap, name):
     leaf = tap.leaves[name]
     return bytes([leaf.version + tap.negflag]) + tap.internal_pubkey + leaf.merklebranch
@@ -391,8 +399,17 @@ class SwapHTLCE2E(BitcoinTestFramework):
         outs.append(self.asset_out(enclave["seller"], 1000 - 3 * HTLC_ATOMS))
         outs += [self.btc_out(pots[e].scriptPubKey, POT) for e in ("E1", "E3")]
         lock, spent = self.with_fee([seller_coin], outs)
+        # Without the seller's own request, no HTLC is admitted or recorded.
+        lock_req = {"tx": lock.serialize().hex(), "asset": asset, "sender_aid": aids["seller"], "inputs": [0],
+                    "htlc_outputs": [{"output": 0, "buyer_aid": aids["buyer"], "hash": H["E1"].hex(), "t_seq": t_seq}]}
+        st, body = self.api("POST", "/v1/cosign", lock_req, expect=None)
+        assert st == 403 and "sender_sig" in body["error"], body
+        st, body = self.api("POST", "/v1/cosign", dict(lock_req, sender_sig=sender_sig(keys["buyer"], lock)), expect=None)
+        assert st == 403 and "sender_sig" in body["error"], body
+        self.rec("lock_without_the_sellers_request", body)
         _, cs = self.api("POST", "/v1/cosign", {
             "tx": lock.serialize().hex(), "asset": asset, "sender_aid": aids["seller"], "inputs": [0],
+            "sender_sig": sender_sig(keys["seller"], lock),
             "htlc_outputs": [{"output": i, "buyer_aid": aids["buyer"], "hash": H[e].hex(), "t_seq": t_seq}
                                for i, e in enumerate(("E1", "E2", "E3"))],
         })
@@ -519,7 +536,8 @@ class SwapHTLCE2E(BitcoinTestFramework):
         change = self.coin_at(lock_txid, 3)
         tx, _ = self.with_fee([change], [self.asset_out(enclave["other"], change[1].nValue.getAmount())])
         st, body = self.api("POST", "/v1/cosign", {"tx": tx.serialize().hex(), "asset": asset,
-                                                   "sender_aid": aids["seller"], "inputs": [0]}, expect=None)
+                                                   "sender_aid": aids["seller"], "inputs": [0],
+                                                   "sender_sig": sender_sig(keys["seller"], tx)}, expect=None)
         assert st == 403 and "frozen" in body["error"], body
         self.rec("frozen_seller_cosign", body)
         self.proc.terminate()

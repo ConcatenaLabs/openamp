@@ -18,6 +18,9 @@ import (
 // its enclave key makes: no transfer sighash can equal this tagged hash.
 const tagDvP = "openamp-dvp-v1"
 
+// tagCosign domain-separates a sender's request for a plain co-sign.
+const tagCosign = "openamp-cosign-v1"
+
 func taggedHash(tag string, msg []byte) [32]byte {
 	t := sha256.Sum256([]byte(tag))
 	h := sha256.New()
@@ -42,6 +45,49 @@ func ExpiryDigest(txid string, expiresAt int64) ([32]byte, error) {
 	copy(msg, id)
 	binary.BigEndian.PutUint64(msg[32:], uint64(expiresAt))
 	return taggedHash(tagDvP, msg), nil
+}
+
+// CosignDigest is what a sender signs to ask for a plain co-sign of its own
+// transaction: tagged_hash("openamp-cosign-v1", txid (32 bytes, as
+// displayed)). A plain co-sign hands the policy signature to the caller,
+// which may then broadcast whenever it likes; so only the sender may ask for
+// one. A counterparty holding the sender's input signature and signed expiry
+// (a trade) cannot make this signature, and must go through the broadcast
+// path, which enforces the expiry.
+func CosignDigest(txid string) ([32]byte, error) {
+	id, err := hex.DecodeString(txid)
+	if err != nil || len(id) != 32 {
+		return [32]byte{}, fmt.Errorf("txid must be 64 hex characters")
+	}
+	return taggedHash(tagCosign, id), nil
+}
+
+// checkSenderSig verifies the sender's request for a plain co-sign.
+func checkSenderSig(tx *elements.Tx, sender *store.User, sigHex string) error {
+	if sigHex == "" {
+		return refuseCode("sender_sig", "a co-sign needs sender_sig: the sender's signature over tagged_hash(\"%s\", txid)", tagCosign)
+	}
+	digest, err := CosignDigest(tx.TxID())
+	if err != nil {
+		return err
+	}
+	pkb, err := hex.DecodeString(sender.Pubkeys[0])
+	if err != nil {
+		return err
+	}
+	pk, err := schnorr.ParsePubKey(pkb)
+	if err != nil {
+		return err
+	}
+	raw, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return refuseCode("sender_sig", "sender_sig: %v", err)
+	}
+	sig, err := schnorr.ParseSignature(raw)
+	if err != nil || !sig.Verify(digest[:], pk) {
+		return refuseCode("sender_sig", "sender_sig is not the sender's signature over this transaction")
+	}
+	return nil
 }
 
 // checkExpiry verifies the sender's signed expiry and that it has not passed.

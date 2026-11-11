@@ -37,7 +37,9 @@ func oa3Xonly(t *testing.T) string {
 		t.Fatal(err)
 	}
 	x := elements.XOnlyFromPriv(priv[:])
-	return hex.EncodeToString(x[:])
+	xh := hex.EncodeToString(x[:])
+	rememberTestKey(xh, priv[:])
+	return xh
 }
 
 // regUser registers a user with the given categories and returns it.

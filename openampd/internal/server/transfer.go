@@ -1184,6 +1184,10 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		UserSigs  map[string]string `json:"user_sigs,omitempty"`
 		ExpiresAt int64             `json:"expires_at,omitempty"`
 		ExpirySig string            `json:"expiry_sig,omitempty"`
+		// SenderSig is the sender's signature over CosignDigest(txid). A
+		// plain co-sign (no broadcast, not a claim) needs it, because it
+		// hands out the policy signature with no expiry and no broadcast.
+		SenderSig string `json:"sender_sig,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
@@ -1209,6 +1213,21 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 	if err != nil {
 		httpErr(w, 400, "tx: %v", err)
 		return
+	}
+	// A plain co-sign is the sender's own request, before anything else is
+	// judged. A claim of an HTLC comes from its buyer, who alone can complete
+	// it (it needs the buyer's key and secret); a broadcast proves the sender
+	// by its input signatures and enforces its signed expiry; a check signs
+	// nothing.
+	if !dry && !req.Broadcast && len(req.HTLCInputs) == 0 {
+		if err := checkSenderSig(tx, sender, req.SenderSig); err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				httpErr(w, 403, "%v", pr)
+				return
+			}
+			httpErr(w, 400, "%v", err)
+			return
+		}
 	}
 	// The refusal keys on the TRANSACTION, never on the asset: a self-built
 	// transfer must be fully transparent because the policy engine cannot check

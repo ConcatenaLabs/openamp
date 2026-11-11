@@ -29,7 +29,7 @@ All under `/openamp` on the live box (Caddy strips the prefix). Public unless no
 - `GET /v1/assets` and `GET /v1/assets/{id}` -> full asset record incl. `rules` and `contract` (restriction legend + terms_hash inside the contract's `openamp` block) (`server.go:217-241`).
 - `GET /v1/supply?asset=<id>` -> `{asset, circulating_atoms, height, supply_cap}`. Purely chain-derived circulating supply (the sum of confirmed enclave holdings), so a redeem-burn (OA-5) lowers it and a reissue (OA-6) raises it once confirmed (`handleSupply` in `issue.go`), beside the asset's supply cap: the cap, what has been minted through it, the room left and the coin that holds the token (`supplyCapView` in `supplycap.go`). Public.
 - `POST /v1/transfers` (hosted builder) and `POST /v1/transfers/{id}/complete` -> see 1.6.
-- `POST /v1/cosign` (self-built transactions) -> see 2.4.
+- `POST /v1/cosign` (self-built transactions, with the sender's `sender_sig` over the txid) -> see 2.4 and the README.
 - `GET /v1/log` -> hash-chained transparency log (registrations, refusals, cosigns, transfers, burns, anchors). OA-LM: a `categories` entry records `categories_hash` (a commitment to the category SET, format `"v":1`), not the raw category vector, so the public log stops leaking each holder's exact categories; the private policy state keeps the raw set (`server.go:358-367`).
 - Bearer-token-gated `/v1/issuer/*` endpoints exist for the platform only; wallets and venues never hold that token. They include the M9 external-issuer two-phase clawback (`POST /v1/issuer/clawback` builds the sweep, `POST /v1/issuer/clawback/{id}/complete` broadcasts after the issuer's own signature) and the redeem-burn/reissue builders (`server.go:120-129`).
 
