@@ -230,6 +230,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/supply", s.handleSupply)
 	mux.HandleFunc("GET /v1/snapshots", s.handleSnapshotGet)
 	mux.HandleFunc("GET /v1/log", s.handleLog)
+	mux.HandleFunc("GET /v1/eligibility", s.handleEligibility)
 
 	mux.HandleFunc("POST /v1/issuer/assets", s.issuerAuth(s.handleIssue))
 	mux.HandleFunc("POST /v1/issuer/damp-assets", s.issuerAuth(s.handleDampIssuePrepare))
@@ -239,6 +240,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/issuer/freeze", s.issuerAuth(s.handleFreeze))
 	mux.HandleFunc("POST /v1/issuer/categories", s.issuerAuth(s.handleCategories))
 	mux.HandleFunc("POST /v1/issuer/rules", s.issuerAuth(s.handleRules))
+	mux.HandleFunc("POST /v1/issuer/onboarding", s.issuerAuth(s.handleOnboarding))
 	mux.HandleFunc("POST /v1/issuer/clawback", s.issuerAuth(s.handleClawback))
 	mux.HandleFunc("POST /v1/issuer/pledges", s.issuerAuth(s.handlePledgeCreate))
 	mux.HandleFunc("GET /v1/issuer/pledges", s.issuerAuth(s.handlePledgeList))
@@ -314,13 +316,23 @@ func (s *Server) mempoolGate(action, signedHex string, details map[string]any) e
 	return nil
 }
 
-// PolicyRefusal is surfaced to clients with HTTP 403 and logged.
-type PolicyRefusal struct{ Reason string }
+// PolicyRefusal is surfaced to clients with HTTP 403 and logged. Code, when
+// set, names the rule that refused in a stable word a client can switch on
+// (GET /v1/eligibility returns it); Reason stays the sentence a person reads.
+type PolicyRefusal struct {
+	Reason string
+	Code   string
+}
 
 func (e *PolicyRefusal) Error() string { return e.Reason }
 
 func refuse(format string, args ...any) error {
 	return &PolicyRefusal{Reason: fmt.Sprintf(format, args...)}
+}
+
+// refuseCode is refuse with the rule's code attached.
+func refuseCode(code, format string, args ...any) error {
+	return &PolicyRefusal{Reason: fmt.Sprintf(format, args...), Code: code}
 }
 
 // --- simple handlers ---------------------------------------------------------

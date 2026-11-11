@@ -33,7 +33,7 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
 	admitted map[string]*store.User) error {
 	if sender.Frozen {
-		return refuse("sender frozen")
+		return refuseCode("sender_frozen", "sender frozen")
 	}
 	assetCommit := hex.EncodeToString(explicitAssetCommit(asset.ID))
 
@@ -87,7 +87,7 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 			atomsOut[u.AID] += amt
 		}
 		if u.Frozen && u.AID != asset.IssuerAID {
-			return refuse("recipient %s frozen", u.AID)
+			return refuseCode("frozen", "recipient %s frozen", u.AID)
 		}
 	}
 	return s.checkRules(asset, sender, recipients, burned, height)
@@ -124,7 +124,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 			}
 			have := balances[sender.AID]
 			if have < leaving || have-leaving < pledged {
-				return refuse(
+				return refuseCode("pledged",
 					"%d atoms are pledged as loan collateral; this transfer "+
 						"would leave %s holding %d. Repay or settle the loan "+
 						"first, or ask the issuer to release the pledge",
@@ -165,7 +165,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 				}
 			})
 			if !ok {
-				return refuse("recipient %s lacks a permitted category", aid)
+				return refuseCode("category", "recipient %s lacks a permitted category", aid)
 			}
 		}
 	}
@@ -190,7 +190,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 				}
 				for _, c := range cats {
 					if strings.HasPrefix(c, d.Prefix) {
-						return refuse("recipient %s holds category %s denied until height %d (current %d)",
+						return refuseCode("category_denied", "recipient %s holds category %s denied until height %d (current %d)",
 							aid, c, d.UntilHeight, height)
 					}
 				}
@@ -207,7 +207,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 			}
 		}
 		if !(onlyIssuer && rules.ConvertDuringLockin) {
-			return refuse("asset is locked in until height %d (current %d)", rules.LockinUntilHeight, height)
+			return refuseCode("lockin", "asset is locked in until height %d (current %d)", rules.LockinUntilHeight, height)
 		}
 	}
 
@@ -228,7 +228,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 			}
 		})
 		if window+sent > rules.VelocityMaxAtoms {
-			return refuse("velocity limit: %d atoms in window plus %d exceeds %d",
+			return refuseCode("velocity", "velocity limit: %d atoms in window plus %d exceeds %d",
 				window, sent, rules.VelocityMaxAtoms)
 		}
 	}
@@ -254,7 +254,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 			// The sender may be exiting entirely; keep the check conservative
 			// (sender still counted) — a cap breach on exit is never created.
 			if len(holders) > rules.HolderCap {
-				return refuse("holder cap %d would be exceeded (%d holders)", rules.HolderCap, len(holders))
+				return refuseCode("holder_cap", "holder cap %d would be exceeded (%d holders)", rules.HolderCap, len(holders))
 			}
 		}
 		// Per-category holder caps (OA-3): each holder's categories come from the
@@ -290,7 +290,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 					}
 				}
 				if len(holders) > limit {
-					return refuse("holder cap for category %s: %d holders would exceed %d", cat, len(holders), limit)
+					return refuseCode("holder_cap", "holder cap for category %s: %d holders would exceed %d", cat, len(holders), limit)
 				}
 			}
 		}
@@ -299,7 +299,7 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 				continue
 			}
 			if balances[sender.AID] < sent+v.Atoms {
-				return refuse("vesting: %d atoms locked until height %d", v.Atoms, v.UntilHeight)
+				return refuseCode("vesting", "vesting: %d atoms locked until height %d", v.Atoms, v.UntilHeight)
 			}
 		}
 	}
