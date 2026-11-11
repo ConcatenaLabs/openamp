@@ -71,9 +71,12 @@ type Config struct {
 	IssuerToken string
 	FeeAsset    string // display hex of the ordinary fee asset the server pays fees in
 	FeeSats     uint64
-	DemoIssuer  bool   // hold issuer keys server-side (testnet demo); production keeps them offline
-	ElectrsURL  string // explorer (electrs) base; prevout fallback when the node lacks -txindex
-	Signer      string // policy-key backend: "local" (default) or "frost"
+	DemoIssuer  bool // hold issuer keys server-side (testnet demo); production keeps them offline
+	// Onboarding is the operator's page for a holder an issuer has not approved,
+	// offered by GET /v1/eligibility when an asset names no page of its own.
+	Onboarding *store.Onboarding
+	ElectrsURL string // explorer (electrs) base; prevout fallback when the node lacks -txindex
+	Signer     string // policy-key backend: "local" (default) or "frost"
 	// DampRegistry is the path to the OpenDAMP CMR pinning file (`opendamp
 	// registry`, or opendamp's vectors/addresses.json, which carries the same
 	// fields). Empty = network enforcement is not configured, and every damp
@@ -227,6 +230,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/transfers", s.handleTransferBuild)
 	mux.HandleFunc("POST /v1/transfers/{id}/complete", s.handleTransferComplete)
 	mux.HandleFunc("POST /v1/cosign", s.handleCosign)
+	mux.HandleFunc("POST /v1/check", s.handleCheck)
 	mux.HandleFunc("POST /v1/tree/leaves/{salt}/exited", s.handleTreeExited)
 	mux.HandleFunc("GET /v1/assets", s.handleAssets)
 	mux.HandleFunc("GET /v1/assets/{id}", s.handleAsset)

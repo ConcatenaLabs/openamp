@@ -375,6 +375,7 @@ func regUserWithKey(t *testing.T, st *store.Store) (*store.User, []byte) {
 	}
 	x := elements.XOnlyFromPriv(priv[:])
 	xh := hex.EncodeToString(x[:])
+	rememberTestKey(xh, priv[:])
 	aid := store.AID([]string{xh})
 	u := &store.User{AID: aid, Pubkeys: []string{xh}}
 	if err := st.Update(func(s *store.State) error { s.Users[aid] = u; return nil }); err != nil {

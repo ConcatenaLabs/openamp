@@ -284,18 +284,24 @@ func (s *Server) htlcClaim(tx *elements.Tx, spent []*elements.SpentOutput, asset
 // later request for the same HTLC (a higher fee, after a stuck claim) is
 // judged without the earlier one's velocity record, and replaces it rather
 // than adding a second. The record stops counting at T_seq unless mined.
-func (s *Server) handleHTLCClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []htlcInput) {
+func (s *Server) handleHTLCClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []htlcInput, dry bool) {
 	rec, tree, idx, err := s.htlcClaim(tx, spent, asset, sender, ins)
 	if err == nil {
 		err = s.checkTransferExcept(tx, asset, sender, map[string]uint64{}, nil, outpointString(tx.In[idx].Prevout))
 	}
 	if err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
-			logRefusal("htlc-claim", s.st, map[string]any{"seller": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+			if !dry {
+				logRefusal("htlc-claim", s.st, map[string]any{"seller": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+			}
 			httpErr(w, 403, "%v", pr)
 			return
 		}
 		httpErr(w, 502, "%v", err)
+		return
+	}
+	if dry {
+		httpJSON(w, map[string]any{"ok": true, "atoms": rec.Value, "cutoff": time.Unix(int64(rec.TSeq), 0).Add(-claimCutoff).Unix()})
 		return
 	}
 	leaf := tree.Leaves["claim"].Script

@@ -230,7 +230,7 @@ func TestHTLCReclaimVelocity(t *testing.T) {
 	f.s.signer = stubPolicySigner{}
 	cosign := func(tx *elements.Tx) int {
 		w := httptest.NewRecorder()
-		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}})
+		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
 		if w.Code != 200 {
 			t.Logf("co-sign: %d %s", w.Code, w.Body.String())
 		}
@@ -338,7 +338,7 @@ func TestTwinHTLCClaimsKeepTheirRecords(t *testing.T) {
 	}
 	for _, vout := range []uint32{0, 1} {
 		w := httptest.NewRecorder()
-		f.s.handleHTLCClaim(w, claimOf(vout), spent, f.asset, f.seller, []htlcInput{{Input: 0}})
+		f.s.handleHTLCClaim(w, claimOf(vout), spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
 		if w.Code != 200 {
 			t.Fatalf("claim of twin %d: %d %s", vout, w.Code, w.Body.String())
 		}
@@ -362,7 +362,7 @@ func TestTwinHTLCClaimsKeepTheirRecords(t *testing.T) {
 	nf.In[1].Sequence = 0xfffffffe
 	for name, tx := range map[string]*elements.Tx{"a lock time": lt, "a non-final input": nf} {
 		w := httptest.NewRecorder()
-		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}})
+		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}}, false)
 		if w.Code != 403 {
 			t.Fatalf("a claim with %s: %d", name, w.Code)
 		}

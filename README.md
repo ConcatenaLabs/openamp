@@ -46,6 +46,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `POST /v1/transfers` | Build a hosted transfer (fee conversion or sponsorship) |
 | `POST /v1/transfers/{id}/complete` | Submit the holder's signatures, co-sign and broadcast |
 | `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid), including a board into an asset's tree |
+| `POST /v1/check` | The same request as `/v1/cosign`, judged by every check, with nothing signed, recorded or logged: `{"ok": true, "atoms"}` or the refusal |
 | `POST /v1/tree/leaves/{salt}/exited` | Close a tree leaf its holder took home to its enclave (anyone may report; the chain is the proof) |
 | `GET /v1/assets` | All assets with their contracts |
 | `GET /v1/assets/{id}` | One asset |
@@ -87,7 +88,7 @@ A refusal is an answer, not an error (200):
  "onboarding": {"name": "Bond Issuer Ltd", "url": "https://bonds.example/apply"}}
 ```
 
-`code` is one of `unregistered`, `frozen`, `sender_frozen`, `category`, `category_denied`, `lockin`, `holder_cap`, `velocity`, `vesting`, `pledged`, `not_whitelisted`, `receive_window`, `limit`, `sender_not_whitelisted`, `sender_locked`, or `rules` for anything else; a wallet chooses its words by it. `onboarding` comes with every refusal: the page the issuer set (`POST /v1/issuer/onboarding`), else `https://` plus the domain the issuance contract names, else absent. A missing `asset` or party is 400, an unknown asset or seller 404, a network-enforced asset with no published policy 409.
+With `-onboarding` set, a refusal also carries `operator_onboarding`, the operator's page, so a wallet can try the asset's registry entry between the asset's own page and the operator's. `code` is one of `unregistered`, `frozen`, `sender_frozen`, `category`, `category_denied`, `lockin`, `holder_cap`, `velocity`, `vesting`, `pledged`, `not_whitelisted`, `receive_window`, `limit`, `sender_not_whitelisted`, `sender_locked`, or `rules` for anything else; a wallet chooses its words by it. `onboarding` comes with every refusal: the page the issuer set (`POST /v1/issuer/onboarding`), else `https://` plus the domain the issuance contract names, else absent. A missing `asset` or party is 400, an unknown asset or seller 404, a network-enforced asset with no published policy 409.
 
 **`POST /v1/transfers`**, body:
 
@@ -113,8 +114,10 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 **`POST /v1/cosign`** for self-built transactions (the sender attaches its own ordinary-asset fee). Self-built flows are transparent-only: a transaction containing blinded outputs, or claiming a blinded enclave coin as an input, is refused whatever the asset — per-transfer confidentiality lives in the hosted flow. Body:
 
 ```json
-{"tx": "<tx hex>", "asset": "<id>", "sender_aid": "...", "inputs": [0, 1]}
+{"tx": "<tx hex>", "asset": "<id>", "sender_aid": "...", "inputs": [0, 1], "sender_sig": "<hex>"}
 ```
+
+`sender_sig` is the sender's BIP340 signature, by its enclave key, over `tagged_hash("openamp-cosign-v1", txid)`, where `txid` is the 32 bytes of the displayed txid. A co-sign hands the caller the policy signature to broadcast whenever it likes, so only the sender may ask for one: without this signature, or with anyone else's, the request is refused (403, code `sender_sig`) before anything else is judged. A counterparty holding the sender's input signature cannot get the policy signature this way; a trade goes through the broadcast below, which enforces the sender's expiry. A claim of a swap HTLC needs no `sender_sig` (see "Claiming").
 
 `inputs` are the indices spending the sender's enclave outputs. The server checks that each claimed input really is the sender's enclave output, that no unclaimed input spends this asset's enclaves, and runs the same policy engine. Response (the caller assembles the witnesses and broadcasts):
 
@@ -124,6 +127,18 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 ```
 
 Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <leaf script> <control block>`.
+
+**Trades: check first, then let this server broadcast.** A trade of a restricted asset against another asset in one transaction (delivery against payment) goes through this endpoint in two steps.
+
+- **`POST /v1/check` first.** The same body, every check, and nothing signed, recorded or logged. A refusal costs nobody a signature.
+- **`/v1/cosign` with `"broadcast": true` once every party has signed.** This server then completes the sender's enclave inputs and broadcasts the transaction itself, so its signature never exists apart from a broadcast. The request adds three things:
+  - `user_sigs`: the sender's signature for each claimed input, keyed by index. This server checks each one against the sighash it computes.
+  - `expires_at`: a Unix time.
+  - `expiry_sig`: the sender's BIP340 signature over `tagged_hash("openamp-dvp-v1", txid || expires_at)`. Here `txid` is the 32 bytes of the displayed txid and `expires_at` is 8 bytes big-endian.
+
+  This server refuses the trade from `expires_at` on (403, code `expired`), so a trade the sender signed cannot be used after the time the sender chose. Every other input must arrive signed. The answer is `{"txid"}`, and the trade is recorded only once the node has taken it. A claim of a swap HTLC is never broadcast this way, because its buyer adds the secret.
+
+`e2e/dvp.py` runs a trade through both steps against a node.
 
 ### Swap HTLCs: a restricted asset for on-chain BTC
 
@@ -152,7 +167,7 @@ claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
 **Locking.** The seller co-signs its lock transaction through `POST /v1/cosign`, naming each HTLC output:
 
 ```json
-{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0],
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0], "sender_sig": "<hex>",
  "htlc_outputs": [{"output": 0, "buyer_aid": "<buyer>", "hash": "<H hex>", "t_seq": 1794432408}]}
 ```
 
@@ -169,7 +184,7 @@ The HTLC then counts as the seller's own coin in every balance, holder count and
 {"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "htlc_inputs": [{"input": 0}]}
 ```
 
-A claim is final: no lock time and every input's sequence final, so it is valid at once (a claim that could be mined only at `T_seq` could lose to the refund with the secret out). It spends exactly one HTLC and no other coin of the asset. It pays the HTLC's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
+The request needs no `sender_sig`: it comes from the buyer, and only the buyer can complete the claim, with its key and the secret. A claim is final: no lock time and every input's sequence final, so it is valid at once (a claim that could be mined only at `T_seq` could lose to the refund with the secret out). It spends exactly one HTLC and no other coin of the asset. It pays the HTLC's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
 
 A claim may be requested again, for a higher fee or after a stuck transaction, until one is mined. A re-claim is judged without the same HTLC's unmined claim, which is the same movement, and replaces that record; claims are recorded by the HTLC's outpoint, so two HTLCs of the same terms never share one. Whichever co-signed claim is mined counts at its height; the HTLC's refund or claw releases the record, until a reorg undoes that spend, when the record counts again. A claim is plain: an output carrying a proof or a nonce is refused, because the node would refuse the claim.
 
@@ -480,6 +495,7 @@ Run against a node:
 | `-signer` | `local` (`OPENAMPD_SIGNER`) | policy-key backend: `local` (one key per asset) or `frost` (2-of-3 threshold quorum, DKG-generated keys; `OPENAMPD_FROST_KEYGEN=dealer` reverts to the trusted-dealer split) |
 | `-dampregistry` | (none) | path to the OpenDAMP CMR pinning file (`OPENAMPD_DAMP_REGISTRY`); unset disables network enforcement |
 | `-electrs` | `http://127.0.0.1:3003` (`OPENAMPD_ELECTRS_URL`) | explorer (electrs) base URL; prevout fallback for `/v1/cosign` when the node lacks `-txindex` |
+| `-onboarding` | `$OPENAMPD_ONBOARDING` | `"name|url"` of the operator's page where a holder an issuer has not approved asks to be approved; `GET /v1/eligibility` offers it as `operator_onboarding` beside the asset's own page |
 | `-arcaenclave` | `$OPENAMPD_ARCA_ENCLAVE` | path to `arca-enclave`, built from the arca repository, which reads the boards and transfers of an asset's tree; unset, no asset has a tree here and every tree call answers 501 |
 | `-follow` | `2s` | chain follower poll interval |
 

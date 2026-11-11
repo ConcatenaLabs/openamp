@@ -182,7 +182,7 @@ func (f *treeFixture) boardTx(t *testing.T, u *store.User, boardSpk string, valu
 
 func (f *treeFixture) cosignBoard(t *testing.T, u *store.User, tx *elements.Tx, answer map[string]any) (int, string) {
 	return f.post(t, f.s.handleCosign, "/v1/cosign", map[string]any{"tx": hex.EncodeToString(tx.Serialize()),
-		"asset": f.asset.ID, "sender_aid": u.AID, "inputs": []int{0},
+		"asset": f.asset.ID, "sender_aid": u.AID, "inputs": []int{0}, "sender_sig": testSenderSig(t, f.s, tx, u.AID),
 		"tree_outputs": []map[string]any{{"output": 0, "record": treefake.BoardHex(answer)}}}, nil)
 }
 
@@ -194,7 +194,7 @@ func TestTree_AdmissionOfABoard(t *testing.T) {
 
 	// Without the board named, the output is no enclave of anyone.
 	code, body := f.post(t, f.s.handleCosign, "/v1/cosign", map[string]any{"tx": hex.EncodeToString(tx.Serialize()),
-		"asset": f.asset.ID, "sender_aid": h1.AID, "inputs": []int{0}}, nil)
+		"asset": f.asset.ID, "sender_aid": h1.AID, "inputs": []int{0}, "sender_sig": testSenderSig(t, f.s, tx, h1.AID)}, nil)
 	wantRefused(t, code, body, "restricted asset to an out-of-enclave destination")
 
 	bad := func(mut func(a map[string]any)) map[string]any {

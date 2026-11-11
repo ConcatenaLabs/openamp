@@ -117,6 +117,7 @@ func callCosign(t *testing.T, s *Server, tx *elements.Tx, asset *store.Asset, se
 		"asset":      asset.ID,
 		"sender_aid": senderAID,
 		"inputs":     inputs,
+		"sender_sig": testSenderSig(t, s, tx, senderAID),
 	})
 	req := httptest.NewRequest("POST", "/v1/cosign", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -204,4 +205,13 @@ func TestOA7_AllowsFullyClaimedCosign(t *testing.T) {
 	if len(resp.Sigs) != 2 {
 		t.Fatalf("expected 2 policy signatures, got %d: %s", len(resp.Sigs), body)
 	}
+}
+
+// callCosignWith posts any body to POST /v1/cosign.
+func callCosignWith(t *testing.T, s *Server, body map[string]any) (int, string) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	rec := httptest.NewRecorder()
+	s.handleCosign(rec, httptest.NewRequest("POST", "/v1/cosign", bytes.NewReader(b)))
+	return rec.Code, rec.Body.String()
 }
