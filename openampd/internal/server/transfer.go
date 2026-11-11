@@ -1410,6 +1410,9 @@ func saturatingSub(a, b uint64) uint64 {
 // mined in its place. Only a record written before inputs were kept expires
 // (Expires), or counts while unconfirmed if it has no expiry either.
 func velocityCounts(rec store.TransferRecord, height, window, now int64) bool {
+	if rec.Released > 0 {
+		return false
+	}
 	if rec.Height >= 0 {
 		return rec.Height > height-window
 	}
