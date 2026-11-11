@@ -206,6 +206,29 @@ func (s *Server) htlcClaim(tx *elements.Tx, spent []*elements.SpentOutput, asset
 	if buyer == nil {
 		return nil, nil, 0, refuseCode("unregistered", "the HTLC's buyer is no longer registered")
 	}
+	// A claim must be valid now: with a lock time it could be mined only
+	// when the keyless refund is valid too, and lose to it with the secret out
+	// (#67).
+	if tx.LockTime != 0 {
+		return nil, nil, 0, refuseCode("htlc", "a claim carries no lock time: it must be final now")
+	}
+	for i, in := range tx.In {
+		if in.Sequence != 0xffffffff {
+			return nil, nil, 0, refuseCode("htlc", "input %d of a claim is not final", i)
+		}
+	}
+	var mined bool
+	op := outpointString(tx.In[idx].Prevout)
+	s.st.View(func(st *store.State) {
+		for _, t := range st.Transfers {
+			if t.Kind == "htlc-claim" && t.ID == op && t.Height >= 0 {
+				mined = true
+			}
+		}
+	})
+	if mined {
+		return nil, nil, 0, refuseCode("htlc", "this HTLC was already claimed")
+	}
 	cutoff := time.Unix(int64(rec.TSeq), 0).Add(-claimCutoff)
 	if !s.now().Before(cutoff) {
 		return nil, nil, 0, refuseCode("claim_cutoff", "the claim cut-off has passed (%s); the HTLC goes home to its seller at t_seq", cutoff.UTC().Format(time.RFC3339))
@@ -254,7 +277,7 @@ func (s *Server) htlcClaim(tx *elements.Tx, spent []*elements.SpentOutput, asset
 func (s *Server) handleHTLCClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []htlcInput) {
 	rec, tree, idx, err := s.htlcClaim(tx, spent, asset, sender, ins)
 	if err == nil {
-		err = s.checkTransferExcept(tx, asset, sender, map[string]uint64{}, nil, rec.SPK)
+		err = s.checkTransferExcept(tx, asset, sender, map[string]uint64{}, nil, outpointString(tx.In[idx].Prevout))
 	}
 	if err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
@@ -278,19 +301,20 @@ func (s *Server) handleHTLCClaim(w http.ResponseWriter, tx *elements.Tx, spent [
 		httpErr(w, 500, "%v", err)
 		return
 	}
+	outpoint := outpointString(tx.In[idx].Prevout)
 	if err := s.st.Update(func(st *store.State) error {
+		// A re-claim replaces the same HTLC's unmined claim, never a mined
+		// one, and never another HTLC's: two HTLCs of the same terms share a
+		// script, not an outpoint (#65).
 		kept := st.Transfers[:0]
 		for _, t := range st.Transfers {
-			if !(t.Kind == "htlc-claim" && t.ID == rec.SPK) {
+			if !(t.Kind == "htlc-claim" && t.ID == outpoint && t.Height < 0) {
 				kept = append(kept, t)
 			}
 		}
 		st.Transfers = append(kept, store.TransferRecord{
 			Txid: txid, Asset: asset.ID, SenderAID: sender.AID, Atoms: rec.Value, Height: -1,
-			Kind: "htlc-claim", ID: rec.SPK,
-			// No claim is mined after the refund; one mined before is counted
-			// at its height by the follower.
-			Expires: int64(rec.TSeq),
+			Kind: "htlc-claim", ID: outpoint, Inputs: txInputs(tx),
 		})
 		return nil
 	}); err != nil {

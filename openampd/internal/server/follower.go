@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -65,19 +66,34 @@ func (s *Server) followTick() error {
 		scanFrom = forkAt
 	}
 	confirmed := map[string]int64{}
+	// What each scanned block spent: an outpoint (txid:vout) to the spending
+	// transaction, its height and the size of that input's witness.
+	spends := map[string]blockSpend{}
 	for h := scanFrom; h <= tip; h++ {
 		hash, err := s.node.GetBlockHash(h)
 		if err != nil {
 			return err
 		}
 		var blk struct {
-			Tx []string `json:"tx"`
+			Tx []struct {
+				Txid string `json:"txid"`
+				Vin  []struct {
+					Txid        string   `json:"txid"`
+					Vout        uint32   `json:"vout"`
+					Txinwitness []string `json:"txinwitness"`
+				} `json:"vin"`
+			} `json:"tx"`
 		}
-		if err := s.node.Call(&blk, "getblock", hash, 1); err != nil {
+		if err := s.node.Call(&blk, "getblock", hash, 2); err != nil {
 			return err
 		}
-		for _, txid := range blk.Tx {
-			confirmed[txid] = h
+		for _, tx := range blk.Tx {
+			confirmed[tx.Txid] = h
+			for _, in := range tx.Vin {
+				if in.Txid != "" {
+					spends[fmt.Sprintf("%s:%d", in.Txid, in.Vout)] = blockSpend{txid: tx.Txid, height: h, witness: len(in.Txinwitness)}
+				}
+			}
 		}
 	}
 
@@ -111,13 +127,65 @@ func (s *Server) followTick() error {
 			if h, ok := confirmed[rec.Txid]; ok {
 				rec.Height = h
 			}
-			// Records written before unconfirmed ones expired (#49) get the
-			// expiry a new one would have.
-			if rec.Height < 0 && rec.Expires == 0 {
+			settleBySpends(rec, spends)
+			// Records written before inputs were kept get the expiry they
+			// would have had (#49).
+			if rec.Height < 0 && len(rec.Inputs) == 0 && rec.Expires == 0 {
 				rec.Expires = time.Now().Add(pendingTTL).Unix()
 			}
 		}
+		kept := st.Transfers[:0]
+		for _, rec := range st.Transfers {
+			if rec.Kind != "released" {
+				kept = append(kept, rec)
+			}
+		}
+		st.Transfers = kept
 		followTree(st, forkAt, confirmed)
 		return nil
 	})
+}
+
+type blockSpend struct {
+	txid    string
+	height  int64
+	witness int // items in the spending input's witness
+}
+
+// htlcClaimWitness is the size of an HTLC claim's witness: policy signature,
+// buyer signature, secret, leaf and control block. A refund has two items, a
+// claw four.
+const htlcClaimWitness = 5
+
+// settleBySpends reads what the newly scanned blocks did to an unconfirmed
+// record's inputs.
+//   - An HTLC claim record: the HTLC's outpoint spent by a claim is that claim,
+//     counted at its height whichever co-signed claim it was (#65: a
+//     superseded claim mined); spent by the refund or a claw, nothing moved
+//     from the seller, and the record is released.
+//   - Any other record: one of its inputs spent by another transaction makes
+//     it impossible, and it is released. Until then it counts: a signature
+//     never expires (#65).
+//
+// A released record is marked with the kind "released" and dropped.
+func settleBySpends(rec *store.TransferRecord, spends map[string]blockSpend) {
+	if rec.Height >= 0 || rec.Kind == "tree" {
+		return
+	}
+	if rec.Kind == "htlc-claim" {
+		if sp, ok := spends[rec.ID]; ok {
+			if sp.witness == htlcClaimWitness {
+				rec.Height, rec.Txid = sp.height, sp.txid
+			} else {
+				rec.Kind = "released"
+			}
+		}
+		return
+	}
+	for _, in := range rec.Inputs {
+		if sp, ok := spends[in]; ok && sp.txid != rec.Txid {
+			rec.Kind = "released"
+			return
+		}
+	}
 }

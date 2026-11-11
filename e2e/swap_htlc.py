@@ -240,6 +240,9 @@ class SwapHTLCE2E(BitcoinTestFramework):
         spk = bytes.fromhex(self.w.getaddressinfo(addr)["scriptPubKey"])
         for i, o in enumerate(tx.vout):
             if bytes(o.scriptPubKey) == spk:
+                # Locked, so the wallet never picks it for another transaction
+                # while a built one holds it (#68); it can still sign for it.
+                self.w.lockunspent(False, [{"txid": txid, "vout": i}])
                 return COutPoint(int(txid, 16), i), o
         raise AssertionError("fee coin not found")
 
@@ -368,7 +371,9 @@ class SwapHTLCE2E(BitcoinTestFramework):
         addr = {w: self.api("GET", "/v1/users/%s/address?asset=%s" % (aids[w], asset))[1] for w in ("seller", "buyer", "other")}
         enclave = {w: bytes.fromhex(addr[w]["script_pubkey"]) for w in addr}
         seller_prog = enclave["seller"][2:]
-        payout = self.spk()  # the seller's own address for the pots' way home
+        # The seller's own v1 program for the pots' way home: a pot never pays
+        # a v0 program, which may be a staking controller's (#66).
+        payout = CScript([OP_1, compute_xonly_pubkey(generate_privkey())[0]])
         self.rec("asset", {"asset": asset, "policy_x": policy_x.hex(), "clawback": True})
 
         # The seller's enclave coin of 1000.
@@ -382,8 +387,7 @@ class SwapHTLCE2E(BitcoinTestFramework):
         t_seq = self.now + 3 * HOUR
         cutoff = t_seq - HOUR
         taps = {e: htlc_tap(H[e], x["buyer"], policy_x, issuer_x, t_seq, seller_prog, self.A, HTLC_ATOMS) for e in H}
-        assert payout[0] == 0 and payout[1] == 20, "a P2WPKH payout"
-        pots = {e: pot_tap(H[e], x["buyer"], t_seq, 0, payout[2:], self.BTC, POT) for e in ("E1", "E3")}
+        pots = {e: pot_tap(H[e], x["buyer"], t_seq, 1, payout[2:], self.BTC, POT) for e in ("E1", "E3")}
 
         # -- the lock -----------------------------------------------------------
         self.log.info("lock: three HTLCs and two pots, co-signed as the seller's own move")
@@ -431,13 +435,15 @@ class SwapHTLCE2E(BitcoinTestFramework):
         ASK = self.fund_order(ask_tap.scriptPubKey, Xi, 1000000000)
         self.rec("seller_resting_orders", {"bid_for_the_asset": "%064x" % BID[0].hash, "ask_X_for_the_fee_asset": "%064x" % ASK[0].hash})
 
-        def claim_tx(e, pot=True, secret=None, policy=True, buyer_pot_sig=True, to=None):
-            """The buyer's claim of HTLC e, with its pot paying the fee."""
+        def claim_tx(e, pot=True, secret=None, policy=True, buyer_pot_sig=True, to=None, locktime=0):
+            """The buyer's claim of HTLC e, with its pot paying the fee. Final:
+            no lock time and final sequences, so it is valid at once."""
             ins = [E[e]] + ([P[e]] if pot else [])
             tx = CTransaction()
             tx.nVersion = 2
+            tx.nLockTime = locktime
             for op, _ in ins:
-                tx.vin.append(CTxIn(op, nSequence=NONFINAL))
+                tx.vin.append(CTxIn(op, nSequence=0xffffffff if not locktime else NONFINAL))
             tx.vout = [self.asset_out(to or enclave["buyer"], HTLC_ATOMS)]
             if pot:
                 tx.vout.append(self.btc_out(self.spk(), POT - FEE))
@@ -479,6 +485,11 @@ class SwapHTLCE2E(BitcoinTestFramework):
                     "Invalid Schnorr signature")
         st, body = claim_tx("E3", to=enclave["other"])[2:]
         assert st == 403 and "buyer's enclave" in body["error"], body
+        # PV5 S16 (#67): a claim that is not final now (a lock time of T_seq)
+        # could lose to the refund with the secret out: no co-sign.
+        st, body = claim_tx("E3", locktime=t_seq)[2:]
+        assert st == 403 and "lock time" in body["error"], body
+        self.rec("server_refusal_claim_with_a_lock_time", body)
         self.rec("server_refusal_claim_to_another_holder", body)
 
         # -- 3. RV34 D1: the buyer gets E1's claim co-signed, and withholds it -------

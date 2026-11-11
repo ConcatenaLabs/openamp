@@ -240,7 +240,9 @@ func (s *Server) checkRulesExcept(asset *store.Asset, sender *store.User, recipi
 				if rec.Asset != asset.ID || rec.SenderAID != sender.AID {
 					continue
 				}
-				if reclaim != "" && rec.Kind == "htlc-claim" && rec.ID == reclaim {
+				// A re-claim replaces the same HTLC's unmined claim; a mined
+				// claim always counts.
+				if reclaim != "" && rec.Kind == "htlc-claim" && rec.ID == reclaim && rec.Height < 0 {
 					continue
 				}
 				if velocityCounts(rec, height, rules.VelocityWindowBlocks, now) {
@@ -1137,7 +1139,7 @@ func (s *Server) cosignAndBroadcast(p *pendingTransfer, sender *store.User, user
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: txid, Asset: p.asset.ID, SenderAID: sender.AID, Atoms: moved, Height: -1,
-			Expires: time.Now().Add(pendingTTL).Unix(),
+			Inputs: txInputs(p.tx),
 		})
 		return nil
 	})
@@ -1341,7 +1343,7 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: rawTxid, Asset: asset.ID, SenderAID: sender.AID, Atoms: sent, Height: -1,
-			Expires: time.Now().Add(pendingTTL).Unix(),
+			Inputs: txInputs(tx),
 		})
 		return nil
 	})
@@ -1403,12 +1405,33 @@ func saturatingSub(a, b uint64) uint64 {
 }
 
 // velocityCounts: a confirmed record counts while its height is inside the
-// window; an unconfirmed one until it expires (#49). A record that never
-// expires (no Expires) counts while unconfirmed, as before; the follower gives
-// every such record an expiry (follower.go).
+// window; an unconfirmed one for as long as it is kept: the follower drops it
+// once one of its inputs is spent elsewhere, or counts the HTLC claim that was
+// mined in its place. Only a record written before inputs were kept expires
+// (Expires), or counts while unconfirmed if it has no expiry either.
 func velocityCounts(rec store.TransferRecord, height, window, now int64) bool {
 	if rec.Height >= 0 {
 		return rec.Height > height-window
 	}
+	if len(rec.Inputs) > 0 {
+		return true
+	}
 	return rec.Expires == 0 || now < rec.Expires
+}
+
+// txInputs are a transaction's input outpoints as "txid:vout" (display txid).
+func txInputs(tx *elements.Tx) []string {
+	out := make([]string, 0, len(tx.In))
+	for _, in := range tx.In {
+		out = append(out, outpointString(in.Prevout))
+	}
+	return out
+}
+
+func outpointString(o elements.OutPoint) string {
+	h := o.Hash
+	for i, j := 0, len(h)-1; i < j; i, j = i+1, j-1 {
+		h[i], h[j] = h[j], h[i]
+	}
+	return fmt.Sprintf("%s:%d", hex.EncodeToString(h[:]), o.N)
 }
