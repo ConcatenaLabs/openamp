@@ -399,6 +399,13 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 			}
 			add(hex.EncodeToString(tree.ScriptPubKey()), u.AID)
 		}
+		// A coin in a swap escrow is its seller's until claimed, and every rule
+		// reading a balance must see it there.
+		for spk, e := range st.Escrows {
+			if e.Asset == asset.ID {
+				add(spk, e.SellerAID)
+			}
+		}
 	})
 	if scanErr != nil {
 		return nil, scanErr
@@ -1129,9 +1136,18 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		// TreeOutputs names outputs that are boards of the asset's tree, each
 		// with its board record (tree.go): admitted as their holder's.
 		TreeOutputs []treeOutput `json:"tree_outputs,omitempty"`
+		// EscrowOutputs names swap escrows the sender locks its coin in
+		// (escrow.go): admitted as the sender's own. EscrowInputs names the one
+		// escrow a claim spends; sender_aid is then the escrow's seller.
+		EscrowOutputs []escrowOutput `json:"escrow_outputs,omitempty"`
+		EscrowInputs  []escrowInput  `json:"escrow_inputs,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
+		return
+	}
+	if len(req.EscrowInputs) > 0 && (len(req.Inputs) > 0 || len(req.EscrowOutputs) > 0 || len(req.TreeOutputs) > 0) {
+		httpErr(w, 400, "a claim spends one escrow and nothing else: no inputs, escrow_outputs or tree_outputs beside escrow_inputs")
 		return
 	}
 	senderTree, sender, asset, err := s.enclaveFor(req.SenderAID, req.Asset)
@@ -1232,6 +1248,30 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var escrows []*store.Escrow
+	if len(req.EscrowOutputs) > 0 {
+		var escAdmitted map[string]*store.User
+		escAdmitted, escrows, err = s.admitEscrowOutputs(tx, asset, sender, req.EscrowOutputs)
+		if err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+				httpErr(w, 403, "%v", pr)
+				return
+			}
+			httpErr(w, 502, "%v", err)
+			return
+		}
+		if admitted == nil {
+			admitted = map[string]*store.User{}
+		}
+		for spk, u := range escAdmitted {
+			admitted[spk] = u
+		}
+	}
+	if len(req.EscrowInputs) > 0 {
+		s.handleEscrowClaim(w, tx, spent, asset, sender, req.EscrowInputs)
+		return
+	}
 	atomsOut := map[string]uint64{}
 	if err := s.checkTransferAdmitting(tx, asset, sender, atomsOut, admitted); err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
@@ -1283,6 +1323,22 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.st.AppendLog("cosign", map[string]any{"txid": rawTxid, "sender": sender.AID, "asset": asset.ID, "atoms": sent})
+	if len(escrows) > 0 {
+		if err := s.st.Update(func(st *store.State) error {
+			for _, e := range escrows {
+				e.LockTxid = rawTxid
+				st.Escrows[e.SPK] = e
+			}
+			return nil
+		}); err != nil {
+			httpErr(w, 500, "record the escrows: %v", err)
+			return
+		}
+		for _, e := range escrows {
+			s.st.AppendLog("escrow-lock", map[string]any{"txid": rawTxid, "vout": e.Vout, "seller": e.SellerAID,
+				"buyer": e.BuyerAID, "asset": asset.ID, "atoms": e.Value, "hash": e.Hash, "t_seq": e.TSeq})
+		}
+	}
 	if err := s.registerBoards(boards); err != nil {
 		httpErr(w, 500, "register the boards: %v", err)
 		return

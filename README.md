@@ -125,6 +125,54 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 
 Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <leaf script> <control block>`.
 
+### Swap escrows: a restricted asset for on-chain BTC
+
+A restricted asset trades for on-chain bitcoin through a hash-locked swap whose Sequentia side is a **swap escrow**. The buyer, who pays the bitcoin, holds a secret `s` with `H = SHA256(s)`, and locks its bitcoin first. The seller then locks the asset in an escrow for that buyer, and a small **fee pot** of an accepted fee asset beside it. The buyer claims both together with `s`, and the seller reads `s` from the chain to take the bitcoin. Every lock is a time (Unix time, at least 500,000,000), so both chains run on one clock.
+
+The escrow is `P2TR(NUMS, [claim, [refund, claw]])` (no `claw` when the asset has no clawback):
+
+```
+claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
+refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP
+        OP_PUSHCURRENTINPUTINDEX OP_DUP OP_DUP
+        OP_INSPECTOUTPUTSCRIPTPUBKEY OP_1 OP_EQUALVERIFY <seller's enclave program> OP_EQUALVERIFY
+        OP_INSPECTOUTPUTASSET OP_1 OP_EQUALVERIFY <asset> OP_EQUALVERIFY
+        OP_INSPECTOUTPUTVALUE OP_1 OP_EQUALVERIFY <value, 8 bytes LE> OP_EQUAL
+claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
+```
+
+- **The claim** needs the secret, the buyer's key and this server's signature. That signature is the transfer decision: every rule, with the seller as sender and the buyer as recipient.
+- **The refund** needs no key at all. After `T_seq` anyone can send the escrow's whole amount home to the seller's enclave, at the output with the escrow's own input index, and nowhere else. So no freeze, outage or refusal of this server can keep a coin from going home, and a buyer cannot outwait the refund with a co-signed claim it withholds. A frozen seller's coin comes home frozen, because every move from an enclave needs this server.
+- **The fee pot** is `P2TR(NUMS, [claim: OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIG, refund: the same keyless pin, to the seller's own address])`. It pays the claim's fee, so a buyer holding only bitcoin can claim. Its witness carries `s` in plain tapscript.
+
+`openampd/internal/elements/escrow.go` builds both; `tools/gen_escrow_vectors.py` checks them against the node's test framework.
+
+**Locking.** The seller co-signs its lock transaction through `POST /v1/cosign`, naming each escrow output:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0],
+ "escrow_outputs": [{"output": 0, "buyer_aid": "<buyer>", "hash": "<H hex>", "t_seq": 1794432408}]}
+```
+
+An escrow output is admitted only when all of these hold:
+- it is the script those terms, the asset and the output's own explicit amount describe;
+- the buyer is registered, not frozen, and could receive the amount now (the same rule check a co-sign runs);
+- `t_seq` is a time between 2 hours and 7 days ahead, judged by this server's clock or the chain's median time past, whichever is later.
+
+The escrow then counts as the seller's own coin in every balance, holder count and rule. The lock is logged (`escrow-lock`).
+
+**Claiming.** The buyer asks for the claim's policy signature through the same endpoint, naming the escrow:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "escrow_inputs": [{"input": 0}]}
+```
+
+A claim spends exactly one escrow and no other coin of the asset. It pays the escrow's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
+
+A claim may be requested again, for a higher fee or after a stuck transaction, and each request replaces the last one's velocity record. **No claim is co-signed after the cut-off, one hour before `T_seq`** (refused with code `claim_cutoff`). The refund is keyless, so a claim revealed at the last moment could be beaten by it. A claim broadcast at the cut-off has at least 40 Sequentia blocks to confirm before the refund can be valid, because the refund is judged by the median time of the blocks before it. A buyer that misses the cut-off keeps its bitcoin, refunded on the Bitcoin side, and the seller keeps the asset.
+
+`e2e/swap_escrow.py` runs all of it against a node, with every refusal forced into a block.
+
 **Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded; the holder cap would be exceeded; or the sender's vested balance is insufficient.
 
 ### An asset's tree

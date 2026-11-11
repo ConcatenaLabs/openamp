@@ -250,6 +250,22 @@ type TransferRecord struct {
 	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"
 }
 
+// Escrow is a swap escrow of a restricted asset: its seller's coin, waiting
+// for one named buyer to claim it with the secret behind Hash before TSeq, or
+// for anyone to send it home to the seller's enclave after TSeq. Everything
+// its script commits to is here, so the server rebuilds it to recognise it.
+type Escrow struct {
+	SPK       string `json:"spk"`
+	Asset     string `json:"asset"`
+	SellerAID string `json:"seller_aid"`
+	BuyerAID  string `json:"buyer_aid"`
+	Hash      string `json:"hash"`
+	TSeq      uint32 `json:"t_seq"`
+	Value     uint64 `json:"value"`
+	LockTxid  string `json:"lock_txid"`
+	Vout      uint32 `json:"vout"`
+}
+
 type LogEntry struct {
 	Seq    uint64          `json:"seq"`
 	Prev   string          `json:"prev"`
@@ -340,6 +356,10 @@ type State struct {
 	// documents written before trees existed; initialised on load.
 	TreeLeaves    map[string]*TreeLeaf     `json:"tree_leaves,omitempty"`
 	TreeTransfers map[string]*TreeTransfer `json:"tree_transfers,omitempty"`
+	// Escrows are the swap escrows this server admitted (a restricted asset
+	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
+	// seller's coin until claimed. Absent on older documents; initialised on load.
+	Escrows      map[string]*Escrow `json:"escrows,omitempty"`
 	RecentBlocks  []string                 `json:"recent_blocks"` // newest last
 	Height        int64                    `json:"height"`
 	LogHead       string                   `json:"log_head"`
@@ -413,6 +433,9 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.state.TreeTransfers == nil {
 		s.state.TreeTransfers = map[string]*TreeTransfer{}
+	}
+	if s.state.Escrows == nil {
+		s.state.Escrows = map[string]*Escrow{}
 	}
 	return s, nil
 }
