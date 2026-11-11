@@ -271,6 +271,20 @@ type HTLC struct {
 	Vout      uint32 `json:"vout"`
 }
 
+// GatedOrder is a holder's resting offer to sell a restricted asset on the
+// chain: its coin, at a script only this server's signature fills and that
+// goes home to the maker after Expiry. A partial fill keeps the remainder at
+// the same script, so the record, keyed by script, covers every coin of it.
+type GatedOrder struct {
+	SPK      string `json:"spk"`
+	Asset    string `json:"asset"`
+	MakerAID string `json:"maker_aid"`
+	Fill     string `json:"fill"` // the SeqDEX fill covenant it wraps (hex)
+	Expiry   uint32 `json:"expiry"`
+	LockTxid string `json:"lock_txid"`
+	Vout     uint32 `json:"vout"`
+}
+
 type LogEntry struct {
 	Seq    uint64          `json:"seq"`
 	Prev   string          `json:"prev"`
@@ -364,11 +378,14 @@ type State struct {
 	// HTLCs are the swap HTLCs this server admitted (a restricted asset
 	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
 	// seller's coin until claimed. Absent on older documents; initialised on load.
-	HTLCs        map[string]*HTLC `json:"htlcs,omitempty"`
-	RecentBlocks []string         `json:"recent_blocks"` // newest last
-	Height       int64            `json:"height"`
-	LogHead      string           `json:"log_head"`
-	LogSeq       uint64           `json:"log_seq"`
+	HTLCs map[string]*HTLC `json:"htlcs,omitempty"`
+	// GatedOrders are the resting offers this server admitted, keyed by their
+	// scriptPubKey (hex). Each is its maker's coin until filled or home.
+	GatedOrders  map[string]*GatedOrder `json:"gated_orders,omitempty"`
+	RecentBlocks []string               `json:"recent_blocks"` // newest last
+	Height       int64                  `json:"height"`
+	LogHead      string                 `json:"log_head"`
+	LogSeq       uint64                 `json:"log_seq"`
 }
 
 type Store struct {
@@ -441,6 +458,9 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.state.HTLCs == nil {
 		s.state.HTLCs = map[string]*HTLC{}
+	}
+	if s.state.GatedOrders == nil {
+		s.state.GatedOrders = map[string]*GatedOrder{}
 	}
 	return s, nil
 }

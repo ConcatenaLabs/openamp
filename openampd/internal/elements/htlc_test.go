@@ -25,6 +25,12 @@ type htlcVec struct {
 	RefundControl string `json:"refund_control"`
 	ClawScript    string `json:"claw_script"`
 	ClawControl   string `json:"claw_control"`
+	// Gated orders.
+	Expiry       uint32 `json:"expiry"`
+	Fill         string `json:"fill"`
+	MakerProgram string `json:"maker_program"`
+	FillScript   string `json:"fill_script"`
+	FillControl  string `json:"fill_control"`
 }
 
 func loadHTLCVectors(t *testing.T) map[string]htlcVec {
