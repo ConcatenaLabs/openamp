@@ -18,25 +18,36 @@ import (
 //
 //	claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY
 //	        <K_buyer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
-//	refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP <pin: the seller's enclave>
+//	refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP <home: the seller's enclave>
 //	claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
 //
 // Fee pot, P2TR(NUMS, [claim, refund]):
 //
 //	claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIG
-//	refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP <pin: the seller's address>
+//	refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP <home: the seller's address>
 //
-// A pin requires the output at the spending input's own index to carry exactly
-// the given program, the given explicit asset and the given explicit value:
+// A way home requires the coin to be spent as input 0 and output 0 to carry
+// exactly the given program, the given explicit asset and the given explicit
+// value:
 //
+//	OP_PUSHCURRENTINPUTINDEX OP_0 OP_EQUALVERIFY
 //	OP_PUSHCURRENTINPUTINDEX OP_DUP OP_DUP
 //	OP_INSPECTOUTPUTSCRIPTPUBKEY <version> OP_EQUALVERIFY <program> OP_EQUALVERIFY
 //	OP_INSPECTOUTPUTASSET OP_1 OP_EQUALVERIFY <asset> OP_EQUALVERIFY
 //	OP_INSPECTOUTPUTVALUE OP_1 OP_EQUALVERIFY <value, 8 bytes LE> OP_EQUAL
 //
-// The output index is the input's own, not a fixed 0: a keyless path pinned
-// to output 0 would let two refunds of equal value share one output, leaving
-// the second coin free for any other output.
+// Input 0 and output 0, and nothing else, because a keyless path must never
+// accept an output that another covenant in the same transaction also counts
+// as its own. A refund pinned to a fixed output 0 from any input would share
+// that output with a second refund of equal value. A refund pinned to "the
+// output at my own input index" would share output 2k with a SeqDEX order at
+// input k, which pays its maker there: with both paying the seller, a taker
+// could fill the seller's own resting order with the seller's own refund. With
+// the refund at input 0, only one refund fits in a transaction, and every
+// covenant of this project that pays relative to its own index (SeqDEX orders
+// at 2k, the gated order, OpenDAMP's guarded order) pays outputs >= 2 from any
+// input >= 1. So each refund is a transaction of its own, with fee inputs
+// after it.
 
 const (
 	opSize                   = 0x82
@@ -102,7 +113,7 @@ func SwapEscrowTree(t SwapEscrowTerms) (*TapTree, error) {
 	}
 	leaves := []Leaf{
 		{Name: "claim", Script: append(hashLock(t.Hash), CheckSigPair(t.BuyerX, t.PolicyX)...)},
-		{Name: "refund", Script: append(timeLock(t.TSeq), pin(1, t.SellerProgram[:], t.Asset, t.Value)...)},
+		{Name: "refund", Script: append(timeLock(t.TSeq), home(1, t.SellerProgram[:], t.Asset, t.Value)...)},
 	}
 	if t.IssuerX != nil {
 		leaves = append(leaves, Leaf{Name: "claw", Script: CheckSigPair(*t.IssuerX, t.PolicyX)})
@@ -130,7 +141,7 @@ func FeePotTree(t FeePotTerms) (*TapTree, error) {
 	claim = append(claim, opCheckSig)
 	return BuildTree(NUMS,
 		Leaf{Name: "claim", Script: claim},
-		Leaf{Name: "refund", Script: append(timeLock(t.TSeq), pin(t.SellerVersion, t.SellerProgram, t.FeeAsset, t.Value)...)},
+		Leaf{Name: "refund", Script: append(timeLock(t.TSeq), home(t.SellerVersion, t.SellerProgram, t.FeeAsset, t.Value)...)},
 	)
 }
 
@@ -144,10 +155,11 @@ func timeLock(t uint32) []byte {
 	return append(pushNum(int64(t)), opCheckLockTimeVerify, opDrop)
 }
 
-// pin: the output at the current input's index pays exactly value of asset to
-// the witness program of the given version.
-func pin(version byte, program []byte, asset [32]byte, value uint64) []byte {
-	s := []byte{opPushCurrentInputIndex, opDup, opDup, opInspectOutputScriptPub}
+// home: the coin is input 0, and output 0 pays exactly value of asset to the
+// witness program of the given version.
+func home(version byte, program []byte, asset [32]byte, value uint64) []byte {
+	s := []byte{opPushCurrentInputIndex, op0, opEqualVerify}
+	s = append(s, opPushCurrentInputIndex, opDup, opDup, opInspectOutputScriptPub)
 	if version == 0 {
 		s = append(s, op0)
 	} else {

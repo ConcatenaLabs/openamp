@@ -111,6 +111,11 @@ func (s *Server) followTick() error {
 			if h, ok := confirmed[rec.Txid]; ok {
 				rec.Height = h
 			}
+			// Records written before unconfirmed ones expired (#49) get the
+			// expiry a new one would have.
+			if rec.Height < 0 && rec.Expires == 0 {
+				rec.Expires = time.Now().Add(pendingTTL).Unix()
+			}
 		}
 		followTree(st, forkAt, confirmed)
 		return nil

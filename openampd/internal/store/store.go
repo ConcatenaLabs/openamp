@@ -247,7 +247,12 @@ type TransferRecord struct {
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
 	Kind      string `json:"kind,omitempty"`
-	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"
+	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the escrow, for kind "escrow-claim"
+	// Expires (Unix seconds): an unconfirmed record stops counting toward the
+	// sender's velocity at this time. A co-signed transaction that is never
+	// broadcast must not hold the sender's allowance forever; one broadcast
+	// later is counted again, at its height, once the follower sees it mined.
+	Expires int64 `json:"expires,omitempty"`
 }
 
 // Escrow is a swap escrow of a restricted asset: its seller's coin, waiting

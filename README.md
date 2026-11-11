@@ -134,6 +134,7 @@ The escrow is `P2TR(NUMS, [claim, [refund, claw]])` (no `claw` when the asset ha
 ```
 claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
 refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP
+        OP_PUSHCURRENTINPUTINDEX OP_0 OP_EQUALVERIFY
         OP_PUSHCURRENTINPUTINDEX OP_DUP OP_DUP
         OP_INSPECTOUTPUTSCRIPTPUBKEY OP_1 OP_EQUALVERIFY <seller's enclave program> OP_EQUALVERIFY
         OP_INSPECTOUTPUTASSET OP_1 OP_EQUALVERIFY <asset> OP_EQUALVERIFY
@@ -142,8 +143,9 @@ claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
 ```
 
 - **The claim** needs the secret, the buyer's key and this server's signature. That signature is the transfer decision: every rule, with the seller as sender and the buyer as recipient.
-- **The refund** needs no key at all. After `T_seq` anyone can send the escrow's whole amount home to the seller's enclave, at the output with the escrow's own input index, and nowhere else. So no freeze, outage or refusal of this server can keep a coin from going home, and a buyer cannot outwait the refund with a co-signed claim it withholds. A frozen seller's coin comes home frozen, because every move from an enclave needs this server.
-- **The fee pot** is `P2TR(NUMS, [claim: OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIG, refund: the same keyless pin, to the seller's own address])`. It pays the claim's fee, so a buyer holding only bitcoin can claim. Its witness carries `s` in plain tapscript.
+- **The refund** needs no key at all. After `T_seq` anyone can send the escrow's whole amount home to the seller's enclave, and nowhere else: the escrow must be input 0 and output 0 must carry it home. So no freeze, outage or refusal of this server can keep a coin from going home, and a buyer cannot outwait the refund with a co-signed claim it withholds. A frozen seller's coin comes home frozen, because every move from an enclave needs this server.
+- **Input 0 and output 0, so no output counts twice.** A keyless path must never accept an output that another covenant in the same transaction also counts as its own. A refund to output 0 from any input would share it with a second refund of the same value. A refund to the output at its own input index would share output `2k` with a SeqDEX order at input `k`, which pays its maker there, so a taker could fill the seller's own resting order with the seller's own refund. With the refund at input 0, one refund fits in a transaction, and every covenant here that pays relative to its own index (SeqDEX orders, OpenDAMP's guarded order) pays outputs 2 and above from any input after 0. Each refund is therefore a transaction of its own; anyone adds a fee coin after it.
+- **The fee pot** is `P2TR(NUMS, [claim: OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIG, refund: the same keyless way home, input 0 to output 0, to the seller's own address])`. It pays the claim's fee, so a buyer holding only bitcoin can claim. Its witness carries `s` in plain tapscript.
 
 `openampd/internal/elements/escrow.go` builds both; `tools/gen_escrow_vectors.py` checks them against the node's test framework.
 
@@ -169,11 +171,13 @@ The escrow then counts as the seller's own coin in every balance, holder count a
 
 A claim spends exactly one escrow and no other coin of the asset. It pays the escrow's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
 
-A claim may be requested again, for a higher fee or after a stuck transaction, and each request replaces the last one's velocity record. **No claim is co-signed after the cut-off, one hour before `T_seq`** (refused with code `claim_cutoff`). The refund is keyless, so a claim revealed at the last moment could be beaten by it. A claim broadcast at the cut-off has at least 40 Sequentia blocks to confirm before the refund can be valid, because the refund is judged by the median time of the blocks before it. A buyer that misses the cut-off keeps its bitcoin, refunded on the Bitcoin side, and the seller keeps the asset.
+A claim may be requested again, for a higher fee or after a stuck transaction. A re-claim is judged without the escrow's earlier claim, which is the same movement, and replaces its velocity record. A claim record that is never mined stops counting toward the seller's velocity at `T_seq`.
+
+**No claim is co-signed after the cut-off, one hour before `T_seq`** (refused with code `claim_cutoff`). The refund is keyless, so a claim revealed at the last moment could be beaten by it. The refund is judged by the median time of the 11 blocks before it, so honest producers give a claim broadcast at the cut-off about an hour of blocks. Producers that stamp their blocks up to two hours ahead (as far as a node accepts) can pass `T_seq` in about six blocks, so the cut-off is a last resort, not a guarantee: a wallet claims as soon as the lock is final. A buyer that misses the cut-off keeps its bitcoin, refunded on the Bitcoin side, and the seller keeps the asset.
 
 `e2e/swap_escrow.py` runs all of it against a node, with every refusal forced into a block.
 
-**Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded; the holder cap would be exceeded; or the sender's vested balance is insufficient.
+**Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded (a co-signed transaction that is not yet mined counts until its record expires, 72 hours after the co-sign, or at `T_seq` for an escrow's claim, and counts again at its height if it is mined later); the holder cap would be exceeded; or the sender's vested balance is insufficient.
 
 ### An asset's tree
 

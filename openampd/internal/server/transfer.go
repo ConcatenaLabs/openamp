@@ -32,6 +32,14 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 // exactly as an output at the holder's enclave is.
 func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
 	admitted map[string]*store.User) error {
+	return s.checkTransferExcept(tx, asset, sender, atomsOut, admitted, "")
+}
+
+// checkTransferExcept is checkTransferAdmitting for a re-claim of the escrow
+// reclaim (its script, hex): that escrow's earlier claim record is the same
+// movement, so it is not counted again (see checkRulesExcept).
+func (s *Server) checkTransferExcept(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
+	admitted map[string]*store.User, reclaim string) error {
 	if sender.Frozen {
 		return refuseCode("sender_frozen", "sender frozen")
 	}
@@ -90,7 +98,7 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 			return refuseCode("frozen", "recipient %s frozen", u.AID)
 		}
 	}
-	return s.checkRules(asset, sender, recipients, burned, height)
+	return s.checkRulesExcept(asset, sender, recipients, burned, height, reclaim)
 }
 
 // checkRules is the asset's policy over one movement, wherever it happens: on
@@ -100,6 +108,13 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 // holder holds counts, in its enclave and in live leaves alike
 // (holderBalances).
 func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64) error {
+	return s.checkRulesExcept(asset, sender, recipients, burned, height, "")
+}
+
+// checkRulesExcept is checkRules for a re-claim of the escrow whose script is
+// reclaim (hex, or "" for none). A re-claim replaces that escrow's earlier
+// claim record, which may never be mined, so velocity does not count it.
+func (s *Server) checkRulesExcept(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64, reclaim string) error {
 	// Pledged collateral (Pignus Tier C). A restricted asset cannot be locked
 	// in a lending covenant -- it may only sit at an enclave output this server
 	// co-signs for -- so the collateral does not move at all and this check is
@@ -219,10 +234,16 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 	// Velocity.
 	if rules.VelocityMaxAtoms > 0 && rules.VelocityWindowBlocks > 0 {
 		var window uint64
+		now := s.now().Unix()
 		s.st.View(func(st *store.State) {
 			for _, rec := range st.Transfers {
-				if rec.Asset == asset.ID && rec.SenderAID == sender.AID &&
-					(rec.Height < 0 || rec.Height > height-rules.VelocityWindowBlocks) {
+				if rec.Asset != asset.ID || rec.SenderAID != sender.AID {
+					continue
+				}
+				if reclaim != "" && rec.Kind == "escrow-claim" && rec.ID == reclaim {
+					continue
+				}
+				if velocityCounts(rec, height, rules.VelocityWindowBlocks, now) {
 					window += rec.Atoms
 				}
 			}
@@ -1116,6 +1137,7 @@ func (s *Server) cosignAndBroadcast(p *pendingTransfer, sender *store.User, user
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: txid, Asset: p.asset.ID, SenderAID: sender.AID, Atoms: moved, Height: -1,
+			Expires: time.Now().Add(pendingTTL).Unix(),
 		})
 		return nil
 	})
@@ -1319,6 +1341,7 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: rawTxid, Asset: asset.ID, SenderAID: sender.AID, Atoms: sent, Height: -1,
+			Expires: time.Now().Add(pendingTTL).Unix(),
 		})
 		return nil
 	})
@@ -1377,4 +1400,15 @@ func saturatingSub(a, b uint64) uint64 {
 		return 0
 	}
 	return a - b
+}
+
+// velocityCounts: a confirmed record counts while its height is inside the
+// window; an unconfirmed one until it expires (#49). A record that never
+// expires (no Expires) counts while unconfirmed, as before; the follower gives
+// every such record an expiry (follower.go).
+func velocityCounts(rec store.TransferRecord, height, window, now int64) bool {
+	if rec.Height >= 0 {
+		return rec.Height > height-window
+	}
+	return rec.Expires == 0 || now < rec.Expires
 }

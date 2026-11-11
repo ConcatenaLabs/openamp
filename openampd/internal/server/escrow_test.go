@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -186,4 +187,118 @@ func TestEscrowClaim(t *testing.T) {
 	f.now = tSeq.Add(-claimCutoff)
 	_, _, _, err = f.s.escrowClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins)
 	wantRefusal(t, err, "claim_cutoff")
+}
+
+// Velocity and claims. A re-claim of the same escrow (a higher fee, after a
+// stuck claim) is the same movement as the first claim and is judged without
+// it; a claim record that is never mined stops counting at T_seq, and any
+// other unconfirmed record at its expiry (#49).
+func TestEscrowReclaimVelocity(t *testing.T) {
+	f := newEscrowFixture(t, store.Rules{VelocityMaxAtoms: 1500, VelocityWindowBlocks: 100})
+	_, recs, err := f.s.admitEscrowOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.st.Update(func(x *store.State) error {
+		x.Height = 500
+		x.Escrows[recs[0].SPK] = recs[0]
+		// 400 atoms the seller sent earlier, mined inside the window.
+		x.Transfers = append(x.Transfers, store.TransferRecord{Txid: "aa", Asset: f.asset.ID, SenderAID: f.seller.AID, Atoms: 400, Height: 450})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	escrowSpk, _ := hex.DecodeString(recs[0].SPK)
+	buyerSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.buyer, f.asset))
+	spent := []*elements.SpentOutput{
+		{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: escrowSpk},
+		{Asset: elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32))), Value: elements.ExplicitValue(5000), ScriptPubKey: []byte{0x51, 0x20, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
+	}
+	claim := func(fee uint64) *elements.Tx {
+		feeAsset := elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32)))
+		return &elements.Tx{Version: 2, In: []*elements.TxIn{{}, {}}, Out: []*elements.TxOut{
+			f.out(buyerSpk, 1000),
+			{Asset: feeAsset, Value: elements.ExplicitValue(5000 - fee), Nonce: elements.NullNonce(), ScriptPubKey: spent[1].ScriptPubKey},
+			{Asset: feeAsset, Value: elements.ExplicitValue(fee), Nonce: elements.NullNonce()},
+		}}
+	}
+	f.s.signer = stubPolicySigner{}
+	cosign := func(tx *elements.Tx) int {
+		w := httptest.NewRecorder()
+		f.s.handleEscrowClaim(w, tx, spent, f.asset, f.seller, []escrowInput{{Input: 0}})
+		if w.Code != 200 {
+			t.Logf("co-sign: %d %s", w.Code, w.Body.String())
+		}
+		return w.Code
+	}
+	if code := cosign(claim(100)); code != 200 {
+		t.Fatalf("first claim: %d", code)
+	}
+	// The re-claim at a higher fee: 400 + 1000 is inside 1500, whereas
+	// counting the first claim as well would be 2400.
+	if code := cosign(claim(300)); code != 200 {
+		t.Fatalf("re-claim of the same escrow refused: %d", code)
+	}
+	n := 0
+	f.s.st.View(func(x *store.State) {
+		for _, r := range x.Transfers {
+			if r.Kind == "escrow-claim" {
+				n++
+			}
+		}
+	})
+	if n != 1 {
+		t.Fatalf("%d claim records, want 1", n)
+	}
+	// Another movement is still judged with the claim counted.
+	err = f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 101}, 0, 500)
+	wantRefusal(t, err, "velocity")
+
+	// The claim was never mined. At T_seq it stops counting.
+	f.now = time.Unix(int64(f.tSeq), 0)
+	if err := f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 1100}, 0, 500); err != nil {
+		t.Fatalf("an unmined claim still counts after T_seq: %v", err)
+	}
+	// Mined late after all: counted again, at its height.
+	if err := f.st.Update(func(x *store.State) error {
+		for i := range x.Transfers {
+			if x.Transfers[i].Kind == "escrow-claim" {
+				x.Transfers[i].Height = 499
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = f.s.checkRules(f.asset, f.seller, map[string]uint64{f.other.AID: 101}, 0, 500)
+	wantRefusal(t, err, "velocity")
+}
+
+func TestVelocityCountsUnconfirmedUntilExpiry(t *testing.T) {
+	now := int64(1_800_000_000)
+	for _, c := range []struct {
+		rec  store.TransferRecord
+		want bool
+	}{
+		{store.TransferRecord{Height: 450}, true},
+		{store.TransferRecord{Height: 400}, false},
+		{store.TransferRecord{Height: -1, Expires: now + 1}, true},
+		{store.TransferRecord{Height: -1, Expires: now}, false},
+		{store.TransferRecord{Height: -1}, true},
+	} {
+		if got := velocityCounts(c.rec, 500, 100, now); got != c.want {
+			t.Fatalf("%+v: counts %v, want %v", c.rec, got, c.want)
+		}
+	}
+}
+
+// stubPolicySigner signs anything with 64 zero bytes: these tests judge what
+// the server records, not the signature.
+type stubPolicySigner struct{}
+
+func (stubPolicySigner) GeneratePolicyKey() ([32]byte, string, error) { return [32]byte{}, "", nil }
+func (stubPolicySigner) Adopt(ref, assetID string) error              { return nil }
+func (stubPolicySigner) PolicyPubKey(assetID string) ([32]byte, bool) { return [32]byte{}, true }
+func (stubPolicySigner) SignPolicy(assetID string, sighash [32]byte, ctx PolicyContext) ([]byte, error) {
+	return make([]byte, 64), nil
 }

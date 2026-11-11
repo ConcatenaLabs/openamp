@@ -31,9 +31,16 @@ openampd co-signs as the seller's own move. Then:
      the coin the seller kept; then openampd is STOPPED;
   7. after T_seq, with no server and no key, the refunds refuse in blocks to go
      anywhere but home: another holder's enclave, one atom short, home at
-     another output's index, and two escrows sharing one output;
-  8. E1, E2 and their pots go home in one keyless transaction, mined;
-  9. the withheld claim of step 3 is now refused (its input is spent): the
+     another output's index, a refund that is not input 0, two escrows in one
+     transaction, and an escrow and a pot in one transaction;
+  8. the collision matrix: no output of a refund can also count for another
+     covenant in the same transaction. The seller rests a SeqDEX bid for the
+     asset, paying its enclave, and a SeqDEX ask paid to its payout address
+     (the attacks of proof review PV4: a taker filled the seller's own orders
+     with the seller's own refunds). Every shape is refused in a block;
+  9. E1, E2 and E1's pot go home, each in a keyless transaction of its own as
+     input 0 paying output 0, mined;
+ 10. the withheld claim of step 3 is now refused (its input is spent): the
      buyer cannot take the asset after the refund, which is the attack, closed.
 """
 import http.client
@@ -76,8 +83,11 @@ NONFINAL = 0xfffffffe
 HOUR = 3600
 
 
-def pin(version, program, asset, value):
-    return [OP_PUSHCURRENTINPUTINDEX, OP_DUP, OP_DUP,
+def home(version, program, asset, value):
+    """The way home: the coin is input 0, and output 0 pays exactly value of
+    asset to the program."""
+    return [OP_PUSHCURRENTINPUTINDEX, OP_0, OP_EQUALVERIFY,
+            OP_PUSHCURRENTINPUTINDEX, OP_DUP, OP_DUP,
             OP_INSPECTOUTPUTSCRIPTPUBKEY, OP_0 if version == 0 else OP_1, OP_EQUALVERIFY, program, OP_EQUALVERIFY,
             OP_INSPECTOUTPUTASSET, OP_1, OP_EQUALVERIFY, asset, OP_EQUALVERIFY,
             OP_INSPECTOUTPUTVALUE, OP_1, OP_EQUALVERIFY, struct.pack("<Q", value), OP_EQUAL]
@@ -86,7 +96,7 @@ def pin(version, program, asset, value):
 def escrow_tap(h, buyer_x, policy_x, issuer_x, t_seq, seller_prog, asset, value):
     leaves = [("claim", CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY,
                                  buyer_x, OP_CHECKSIGVERIFY, policy_x, OP_CHECKSIG])),
-              ("refund", CScript([t_seq, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + pin(1, seller_prog, asset, value)))]
+              ("refund", CScript([t_seq, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + home(1, seller_prog, asset, value)))]
     if issuer_x:
         leaves.append(("claw", CScript([issuer_x, OP_CHECKSIGVERIFY, policy_x, OP_CHECKSIG])))
     return taproot_construct(NUMS, leaves)
@@ -95,8 +105,33 @@ def escrow_tap(h, buyer_x, policy_x, issuer_x, t_seq, seller_prog, asset, value)
 def pot_tap(h, buyer_x, t_seq, version, prog, asset, value):
     return taproot_construct(NUMS, [
         ("claim", CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY, buyer_x, OP_CHECKSIG])),
-        ("refund", CScript([t_seq, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + pin(version, prog, asset, value))),
+        ("refund", CScript([t_seq, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + home(version, prog, asset, value))),
     ])
+
+
+# The SeqDEX covenant order's FILL leaf, ported byte for byte from seqdex
+# daemon/pkg/covenant/leaf.go (BuildFillLeaf) by proof review PV4. A fill at
+# input k pays the maker at output 2k and puts the remainder at 2k+1.
+def _push(d):
+    return bytes([len(d)]) + d
+
+
+def fill_leaf(asset_a, asset_b, num, den, min_lot, maker_prog):
+    le8 = lambda n: struct.pack("<Q", n)  # noqa: E731
+    credit, rem = bytes([0xcd, 0x76, 0x93]), bytes([0xcd, 0x76, 0x93, 0x8b])
+    s = bytes([0xcd, 0xc9, 0x51, 0x88])
+    s += rem + bytes([0xd5, 0x9f, 0x63])
+    s += rem + bytes([0xce, 0x51, 0x88]) + _push(asset_a) + bytes([0x87, 0x63])
+    s += rem + bytes([0xd1, 0xcd, 0xca, 0x7b, 0x88, 0x88])
+    s += rem + bytes([0xcf, 0x51, 0x88, 0x76]) + _push(le8(min_lot)) + bytes([0xdf, 0x69])
+    s += bytes([0x67]) + _push(le8(0)) + bytes([0x68, 0x67]) + _push(le8(0)) + bytes([0x68])
+    s += bytes([0xd8, 0x69, 0x76]) + _push(le8(min_lot)) + bytes([0xdf, 0x69])
+    s += _push(le8(num)) + bytes([0xd9, 0x69]) + _push(le8(den - 1)) + bytes([0xd7, 0x69])
+    s += _push(le8(den)) + bytes([0xda, 0x69, 0x77])
+    s += credit + bytes([0xce, 0x51, 0x88]) + _push(asset_b) + bytes([0x88])
+    s += credit + bytes([0xd1, 0x51, 0x88]) + _push(maker_prog) + bytes([0x88])
+    s += credit + bytes([0xcf, 0x51, 0x88, 0x7c, 0xdf])
+    return s
 
 
 def control(tap, name):
@@ -207,6 +242,31 @@ class SwapEscrowE2E(BitcoinTestFramework):
             if bytes(o.scriptPubKey) == spk:
                 return COutPoint(int(txid, 16), i), o
         raise AssertionError("fee coin not found")
+
+    def fund_order(self, spk, asset_internal, value):
+        """A resting order: value of the asset at spk, funded from the wallet."""
+        asset_hex = asset_internal[::-1].hex()
+        if asset_internal == self.BTC:
+            fee_op, fee_txout = self.fee_coin()
+            ins = [(fee_op, fee_txout)]
+            change = [self.btc_out(self.spk(), fee_txout.nValue.getAmount() - value - FEE)]
+        else:
+            u = [u for u in self.w.listunspent() if u["asset"] == asset_hex][0]
+            fee_op, fee_txout = self.fee_coin()
+            ins = [(COutPoint(int(u["txid"], 16), u["vout"]), None), (fee_op, fee_txout)]
+            change = [self.btc_out(self.spk(), fee_txout.nValue.getAmount() - FEE)]
+            left = int(round(u["amount"] * 100000000)) - value
+            if left:
+                change.append(CTxOut(CTxOutValue(left), self.spk(), CTxOutAsset(b"\x01" + asset_internal)))
+        tx = CTransaction()
+        tx.nVersion = 2
+        tx.vin = [CTxIn(op, nSequence=NONFINAL) for op, _ in ins]
+        tx.vout = [CTxOut(CTxOutValue(value), spk, CTxOutAsset(b"\x01" + asset_internal))] + change + \
+            [CTxOut(CTxOutValue(FEE), b"", CTxOutAsset(b"\x01" + self.BTC))]
+        tx = sized(tx_from_hex(self.w.signrawtransactionwithwallet(sized(tx).serialize().hex())["hex"]))
+        txid = self.node.sendrawtransaction(tx.serialize().hex())
+        self.mine()
+        return self.coin_at(txid, 0)
 
     def coin_at(self, txid, vout):
         tx = tx_from_hex(self.node.getrawtransaction(txid))
@@ -354,6 +414,23 @@ class SwapEscrowE2E(BitcoinTestFramework):
                           "leaf_bytes": {n: len(taps["E1"].leaves[n].script) for n in ("claim", "refund", "claw")},
                           "lock_vsize": node.getrawtransaction(lock_txid, True)["vsize"]})
 
+        # -- the seller's resting SeqDEX orders, for the collision matrix ---------
+        # A bid: locks 1,000,000 of the fee asset, buys the restricted asset into
+        # the seller's enclave at 1,000 fee-asset atoms per atom.
+        bid_leaf = fill_leaf(self.BTC, self.A, 1, 1000, 1000, seller_prog)
+        order_refund = CScript([t_seq + 10 * HOUR, OP_CHECKLOCKTIMEVERIFY, OP_DROP, x["seller"], OP_CHECKSIG])
+        bid_tap = taproot_construct(NUMS, [("fill", CScript(bid_leaf)), ("refund", order_refund)])
+        BID = self.fund_order(bid_tap.scriptPubKey, self.BTC, 1000000)
+        # An ask: sells an unrestricted asset X for the fee asset, paid to the
+        # seller's payout address, the pots' way home.
+        xa = self.w.issueasset(assetamount=10, tokenamount=0, blind=False, fee_asset="bitcoin")["asset"]
+        self.mine()
+        Xi = bytes.fromhex(xa)[::-1]
+        ask_leaf = fill_leaf(Xi, self.BTC, 20000, 100000000, 1000, payout[2:])
+        ask_tap = taproot_construct(NUMS, [("fill", CScript(ask_leaf)), ("refund", order_refund)])
+        ASK = self.fund_order(ask_tap.scriptPubKey, Xi, 1000000000)
+        self.rec("seller_resting_orders", {"bid_for_the_asset": "%064x" % BID[0].hash, "ask_X_for_the_fee_asset": "%064x" % ASK[0].hash})
+
         def claim_tx(e, pot=True, secret=None, policy=True, buyer_pot_sig=True, to=None):
             """The buyer's claim of escrow e, with its pot paying the fee."""
             ins = [E[e]] + ([P[e]] if pot else [])
@@ -452,13 +529,31 @@ class SwapEscrowE2E(BitcoinTestFramework):
         # -- 7. after T_seq, refunds go only home ------------------------------------
         mtp = self.jump_to(t_seq + 300)
 
+        def refund_wit(op):
+            key = (op.hash, op.n)
+            tap = next((taps[e] for e in E if (E[e][0].hash, E[e][0].n) == key), None) or \
+                next(pots[e] for e in P if (P[e][0].hash, P[e][0].n) == key)
+            return [bytes(tap.leaves["refund"].script), control(tap, "refund")]
+
         def refund(ins, outs):
             tx, spent = self.with_fee(ins, outs, locktime=t_seq)
             for i, (op, _) in enumerate(ins):
-                key = (op.hash, op.n)
-                tap = next((taps[e] for e in E if (E[e][0].hash, E[e][0].n) == key), None) or \
-                    next(pots[e] for e in P if (P[e][0].hash, P[e][0].n) == key)
-                tx.wit.vtxinwit[i].scriptWitness.stack = [bytes(tap.leaves["refund"].script), control(tap, "refund")]
+                tx.wit.vtxinwit[i].scriptWitness.stack = refund_wit(op)
+            return tx
+
+        def spend(ins_w, outs):
+            """ins_w: [(coin, witness)] in order, witness None for a wallet fee
+            coin; outs exactly as given (the caller balances them)."""
+            tx = CTransaction()
+            tx.nVersion = 2
+            tx.nLockTime = t_seq
+            tx.vin = [CTxIn(c[0], nSequence=NONFINAL) for c, _ in ins_w]
+            tx.vout = list(outs)
+            sized(tx)
+            tx = sized(tx_from_hex(self.w.signrawtransactionwithwallet(tx.serialize().hex())["hex"]))
+            for i, (_, w) in enumerate(ins_w):
+                if w is not None:
+                    tx.wit.vtxinwit[i].scriptWitness.stack = w
             return tx
 
         home = self.asset_out(enclave["seller"], ESCROW)
@@ -469,22 +564,79 @@ class SwapEscrowE2E(BitcoinTestFramework):
                     "Script evaluated without error but finished with a false/empty top stack element")
         self.refuse("refund home at another output's index", refund([E["E1"]], [CTxOut(CTxOutValue(0), CScript([OP_RETURN]), CTxOutAsset(b"\x01" + self.BTC)), home]),
                     "Script failed an OP_EQUALVERIFY operation")
-        self.refuse("two escrows sharing one output home", refund([E["E1"], E["E2"]], [home, self.asset_out(enclave["other"], ESCROW)]),
-                    "Script failed an OP_EQUALVERIFY operation")
         self.refuse("pot refund to another address", refund([P["E1"]], [self.btc_out(self.spk(), POT)]),
                     "Script failed an OP_EQUALVERIFY operation")
+        fee_c = self.fee_coin()
+        fee_back = lambda c: self.btc_out(self.spk(), c[1].nValue.getAmount() - FEE)  # noqa: E731
+        fee_out = CTxOut(CTxOutValue(FEE), b"", CTxOutAsset(b"\x01" + self.BTC))
+        self.refuse("refund at input 1, home at output 1 (a stranger's fee coin at input 0)",
+                    spend([(fee_c, None), (E["E1"], refund_wit(E["E1"][0]))], [fee_back(fee_c), home, fee_out]),
+                    "Script failed an OP_EQUALVERIFY operation")
 
-        # -- 8. everything goes home, with no key and no server -----------------------
-        good = refund([E["E1"], E["E2"], P["E1"]], [home, home, self.btc_out(payout, POT)])
-        txid = self.force("E1, E2 and E1's pot home, keyless, policy server stopped", good)
-        self.rec("refund", {"mtp": mtp, "t_seq": t_seq, "txid": txid, "vsize": node.getrawtransaction(txid, True)["vsize"],
+        # -- 8. the collision matrix ----------------------------------------------------
+        self.log.info("collision matrix: a refund's output never counts for another covenant")
+        matrix = []
+
+        def collide(label, tx, reason):
+            self.refuse(label, tx, reason)
+            matrix.append({"case": label, "refused": reason})
+        # Two refunds of one kind or of two kinds: only one input can be input 0.
+        collide("two escrow refunds in one transaction (E1 at 0, E2 at 1, each home)",
+                refund([E["E1"], E["E2"]], [home, home]), "Script failed an OP_EQUALVERIFY operation")
+        collide("an escrow refund and a pot refund in one transaction (E1 at 0, its pot at 1)",
+                refund([E["E1"], P["E1"]], [home, self.btc_out(payout, POT)]), "Script failed an OP_EQUALVERIFY operation")
+        collide("a pot refund and an escrow refund in one transaction (the pot at 0, E1 at 1)",
+                refund([P["E1"], E["E1"]], [self.btc_out(payout, POT), home]), "Script failed an OP_EQUALVERIFY operation")
+        # PV4's X1: the seller's bid at input 1 pays the seller at output 2; the
+        # escrow at input 2 sends its coin home at output 2. The taker would take
+        # 300,000 of the bid's fee asset for nothing.
+        filled = ESCROW * 1000
+        c = self.fee_coin()
+        taker = self.spk()
+        x1_outs = [self.btc_out(taker, c[1].nValue.getAmount() - FEE + filled), fee_out, home,
+                   self.btc_out(bid_tap.scriptPubKey, 1000000 - filled)]
+        collide("X1: an escrow refund at input 2 as the payment of the seller's bid at input 1 (output 2)",
+                spend([(c, None), (BID, [bid_leaf, control(bid_tap, "fill")]), (E["E1"], refund_wit(E["E1"][0]))], x1_outs),
+                "Script failed an OP_EQUALVERIFY operation")
+        # The same, with the escrow where its refund is valid (input 0): the bid
+        # at input 1 can only count output 2, which no longer carries the asset.
+        c = self.fee_coin()
+        collide("an escrow refund at input 0 (output 0) beside the seller's bid at input 1, which wants output 2",
+                spend([(E["E1"], refund_wit(E["E1"][0])), (BID, [bid_leaf, control(bid_tap, "fill")]), (c, None)],
+                      [home, fee_out, self.btc_out(taker, c[1].nValue.getAmount() - FEE + filled),
+                       self.btc_out(bid_tap.scriptPubKey, 1000000 - filled)]),
+                "Script failed an OP_EQUALVERIFY operation")
+        # PV4's X2: the seller's ask at input 1 is paid at output 2; the pot at
+        # input 2 sends its coin home to the same address at output 2.
+        sold = 100000000
+        c = self.fee_coin()
+        x_out = lambda v, spk: CTxOut(CTxOutValue(v), spk, CTxOutAsset(b"\x01" + Xi))  # noqa: E731
+        collide("X2: a pot refund at input 2 as the payment of the seller's ask at input 1 (output 2)",
+                spend([(c, None), (ASK, [ask_leaf, control(ask_tap, "fill")]), (P["E1"], refund_wit(P["E1"][0]))],
+                      [fee_back(c), x_out(sold, taker), self.btc_out(payout, POT), x_out(1000000000 - sold, ask_tap.scriptPubKey), fee_out]),
+                "Script failed an OP_EQUALVERIFY operation")
+        c = self.fee_coin()
+        collide("a pot refund at input 0 (output 0) beside the seller's ask at input 1, which wants output 2",
+                spend([(P["E1"], refund_wit(P["E1"][0])), (ASK, [ask_leaf, control(ask_tap, "fill")]), (c, None)],
+                      [self.btc_out(payout, POT), x_out(sold, taker), fee_back(c), x_out(1000000000 - sold, ask_tap.scriptPubKey), fee_out]),
+                "Script failed an OP_EQUALVERIFY operation")
+        self.rec("collision_matrix", matrix)
+
+        # -- 9. everything goes home, with no key and no server, one coin a transaction
+        refunds = {}
+        for name, coin, out in (("E1", E["E1"], home), ("E2", E["E2"], home), ("E1's pot", P["E1"], self.btc_out(payout, POT))):
+            txid = self.force("%s home, keyless, input 0 paying output 0, policy server stopped" % name, refund([coin], [out]))
+            refunds[name] = {"txid": txid, "vsize": node.getrawtransaction(txid, True)["vsize"]}
+            rt = tx_from_hex(node.getrawtransaction(txid))
+            assert bytes(rt.vout[0].scriptPubKey) == bytes(out.scriptPubKey)
+        self.rec("refund", {"mtp": mtp, "t_seq": t_seq, "transactions": refunds,
+                            "leaf_bytes": {"escrow_refund": len(taps["E1"].leaves["refund"].script),
+                                           "pot_refund": len(pots["E1"].leaves["refund"].script)},
                             "seller_gets": "both escrows back in its enclave, still frozen there, and the pot"})
         # The coin is home in the seller's enclave, whose every move needs the
         # policy key: the freeze still binds it.
-        rt = tx_from_hex(node.getrawtransaction(txid))
-        assert bytes(rt.vout[0].scriptPubKey) == enclave["seller"] and bytes(rt.vout[1].scriptPubKey) == enclave["seller"]
 
-        # -- 9. the withheld claim can no longer take the asset ----------------------
+        # -- 10. the withheld claim can no longer take the asset ----------------------
         try:
             node.sendrawtransaction(withheld.serialize().hex())
             raise AssertionError("the withheld claim was accepted after the refund")

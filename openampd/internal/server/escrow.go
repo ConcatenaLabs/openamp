@@ -248,12 +248,13 @@ func (s *Server) escrowClaim(tx *elements.Tx, spent []*elements.SpentOutput, ass
 
 // handleEscrowClaim co-signs a buyer's claim of an escrow: the claim leaf's
 // policy signature, never a broadcast, because the buyer adds the secret. A
-// later request for the same escrow (a higher fee, after a stuck claim)
-// replaces the earlier one's velocity record rather than adding a second.
+// later request for the same escrow (a higher fee, after a stuck claim) is
+// judged without the earlier one's velocity record, and replaces it rather
+// than adding a second. The record stops counting at T_seq unless mined.
 func (s *Server) handleEscrowClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []escrowInput) {
 	rec, tree, idx, err := s.escrowClaim(tx, spent, asset, sender, ins)
 	if err == nil {
-		err = s.checkTransfer(tx, asset, sender, map[string]uint64{})
+		err = s.checkTransferExcept(tx, asset, sender, map[string]uint64{}, nil, rec.SPK)
 	}
 	if err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
@@ -287,6 +288,9 @@ func (s *Server) handleEscrowClaim(w http.ResponseWriter, tx *elements.Tx, spent
 		st.Transfers = append(kept, store.TransferRecord{
 			Txid: txid, Asset: asset.ID, SenderAID: sender.AID, Atoms: rec.Value, Height: -1,
 			Kind: "escrow-claim", ID: rec.SPK,
+			// No claim is mined after the refund; one mined before is counted
+			// at its height by the follower.
+			Expires: int64(rec.TSeq),
 		})
 		return nil
 	}); err != nil {
