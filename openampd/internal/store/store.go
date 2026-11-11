@@ -124,6 +124,18 @@ type Asset struct {
 	// operator it names, reassigned off the chain under the same rules. Absent
 	// on every asset that never enabled one, so those records are unchanged.
 	Tree *TreeTerms `json:"tree,omitempty"`
+	// Onboarding is where someone the issuer has not approved yet goes to be
+	// approved: the issuer's name and a page. The issuer sets it (POST
+	// /v1/issuer/onboarding) and GET /v1/eligibility returns it with every
+	// refusal, so a wallet can show a way forward instead of a dead end. Absent
+	// until set, so existing records are unchanged.
+	Onboarding *Onboarding `json:"onboarding,omitempty"`
+}
+
+// Onboarding names the issuer and the page where a holder asks to be approved.
+type Onboarding struct {
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url"`
 }
 
 // SupplyCap records an asset's supply-cap covenant (sequentia-contracts'

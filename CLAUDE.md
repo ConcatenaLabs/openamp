@@ -27,7 +27,8 @@ on `main`. Before a PR, run that too, plus
 issuance, minting or the supply cap, and `e2e/verifier_token.py` for a change to network-enforced
 issuance or the verifier asset's token, `e2e/damp_two_phase.py` for a change to a snapshot or
 derive document, `e2e/damp_contracts.py` for a change to a policy's list of contract templates, and
-`e2e/fee_asset.py` for a change to how a fee is funded.
+`e2e/fee_asset.py` for a change to how a fee is funded, and `e2e/eligibility.py` for a change to the
+rules a transfer is judged by or to `GET /v1/eligibility`.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -47,6 +48,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/internal/fastmerkle/` | issuance entropy and asset/token id derivation |
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
 | `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
+| `e2e/eligibility.py` | `GET /v1/eligibility` end to end: a refusal with its code and the issuer's page, the same refusal from a real co-sign, a grant that makes the transfer settle, a holder cap read from the chain |
 | `e2e/fee_asset.py` | the fee rule end to end: no `-feeasset`, each fee paid in the asset whose largest coin covers the most fees, a node accepting nothing refused, a `-feeasset` the node does not accept refused at start |
 | `e2e/damp_two_phase.py` | the README's two-phase issuance and policy update of a network-enforced asset, run as written: every document openampd returns goes to `opendamp` unchanged |
 | `e2e/damp_contracts.py` | a policy's contract templates end to end: openampd lists SeqDEX's guarded order, opendamp derives and builds from the published document, the asset enters an order and a fill carries it to another whitelisted holder, and taking the template off the list stops the next fill |

@@ -52,6 +52,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `GET /v1/supply?asset=<id>` | Chain-derived circulating supply, the asset's supply cap and, for a network-enforced asset, its verifier-asset token's covenant: `{"asset", "circulating_atoms", "height", "supply_cap", "verifier_token"}` |
 | `GET /v1/snapshots?asset=<id>[&seq=<n>]` | Published policy snapshots (network-enforced assets; latest, or one by `seq`) |
 | `GET /v1/log` | The transparency log (JSON lines) |
+| `GET /v1/eligibility?asset=<id>&aid=<aid>` | May this party receive the asset now, and if not, why and where to ask the issuer (also `key=`, `atoms=`, `from=`) |
 
 **`POST /v1/users`**, body `{"pubkeys": ["<x-only hex>", ...]}`, response `{"aid": "<40-char hex>"}`. The AID is `sha256("openamp-aid-v1" || sorted pubkey hex)` truncated to 20 bytes. Registering the same key set twice returns the same AID. `pubkeys[0]` is the active enclave key.
 
@@ -71,6 +72,22 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 ```
 
 **`GET /v1/users/{aid}/balance?asset=<id>`** returns `{"aid", "asset", "atoms", "utxos"}` from a confirmed UTXO-set scan.
+
+**`GET /v1/eligibility?asset=<id>&aid=<aid>[&atoms=<n>][&from=<aid>]`** tells a wallet, before any money moves, whether a party may receive the asset now. It signs and records nothing, so a quote may call it as often as it likes.
+
+- For a co-signed asset it runs the same rule check a co-sign runs, over a receipt of `atoms` (default 1) by the party: registration, a freeze, categories, category windows, the lock-in and holder caps (read from the chain). Without `from` the seller is nobody in particular, so only rules that bind every sale apply; with `from` (the seller's AID) that seller's velocity, vesting, pledges and freeze count too. `key=<x-only>` names an account by its single key instead of `aid`.
+- For a network-enforced asset it reads the current policy: the party's key (`key=`, or the first key of a registered `aid`) must be on the whitelist with its receive window open, and `atoms` within the transfer limit; `from=<x-only>` checks the seller's own entry and lockup.
+
+A refusal is an answer, not an error (200):
+
+```json
+{"asset": "...", "enforcement": "cosign", "aid": "...", "atoms": 100, "height": 104,
+ "eligible": false, "code": "category",
+ "reason": "recipient ... lacks a permitted category",
+ "onboarding": {"name": "Bond Issuer Ltd", "url": "https://bonds.example/apply"}}
+```
+
+`code` is one of `unregistered`, `frozen`, `sender_frozen`, `category`, `category_denied`, `lockin`, `holder_cap`, `velocity`, `vesting`, `pledged`, `not_whitelisted`, `receive_window`, `limit`, `sender_not_whitelisted`, `sender_locked`, or `rules` for anything else; a wallet chooses its words by it. `onboarding` comes with every refusal: the page the issuer set (`POST /v1/issuer/onboarding`), else `https://` plus the domain the issuance contract names, else absent. A missing `asset` or party is 400, an unknown asset or seller 404, a network-enforced asset with no published policy 409.
 
 **`POST /v1/transfers`**, body:
 
@@ -136,6 +153,7 @@ Every tree call needs `-arcaenclave` (the tool) and answers 501 without it. The 
 | `POST /v1/issuer/freeze` | Freeze or unfreeze a user |
 | `POST /v1/issuer/categories` | Set a user's categories |
 | `POST /v1/issuer/rules` | Replace an asset's policy rules |
+| `POST /v1/issuer/onboarding` | Set or clear where an unapproved buyer asks for approval: `{"asset", "name", "url"}`; an empty `url` clears it |
 | `POST /v1/issuer/clawback` | Claw back a holder's enclave UTXOs (phase 1 when the issuer key is external) |
 | `POST /v1/issuer/clawback/{id}/complete` | Phase 2: submit the issuer's signatures, co-sign and broadcast |
 | `POST /v1/issuer/burn` | Build a redeem burn of a holder's units to an OP_RETURN output (completed through `POST /v1/transfers/{id}/complete`) |
