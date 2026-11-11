@@ -429,6 +429,12 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 				add(spk, e.SellerAID)
 			}
 		}
+		// So is a coin in a gated order its maker's, until filled.
+		for spk, o := range st.GatedOrders {
+			if o.Asset == asset.ID {
+				add(spk, o.MakerAID)
+			}
+		}
 	})
 	if scanErr != nil {
 		return nil, scanErr
@@ -1177,6 +1183,12 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		// HTLC a claim spends; sender_aid is then the HTLC's seller.
 		HTLCOutputs []htlcOutput `json:"htlc_outputs,omitempty"`
 		HTLCInputs  []htlcInput  `json:"htlc_inputs,omitempty"`
+		// OrderOutputs names gated orders the sender places (gated.go):
+		// admitted as the sender's own. OrderInputs names the one order a fill
+		// spends; sender_aid is then the order's maker, and the fill must ask
+		// for the broadcast.
+		OrderOutputs []orderOutput `json:"order_outputs,omitempty"`
+		OrderInputs  []orderInput  `json:"order_inputs,omitempty"`
 		// Broadcast asks this server to complete and broadcast the transaction
 		// itself, so its signature never exists apart from a broadcast. The
 		// caller supplies the sender's signature on each claimed input
@@ -1197,6 +1209,11 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 	}
 	if len(req.HTLCInputs) > 0 && req.Broadcast {
 		httpErr(w, 400, "a claim is broadcast by its buyer, who adds the secret: broadcast is refused for htlc_inputs")
+		return
+	}
+	if len(req.OrderInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.HTLCInputs) > 0 ||
+		len(req.TreeOutputs) > 0 || len(req.OrderOutputs) > 0) {
+		httpErr(w, 400, "a fill spends one order and nothing else of the asset: no inputs, htlc_*, tree_outputs or order_outputs beside order_inputs")
 		return
 	}
 	if len(req.HTLCInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.TreeOutputs) > 0) {
@@ -1221,7 +1238,7 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 	// it (it needs the buyer's key and secret); a broadcast proves the sender
 	// by its input signatures and enforces its signed expiry; a check signs
 	// nothing.
-	if !dry && !req.Broadcast && len(req.HTLCInputs) == 0 {
+	if !dry && !req.Broadcast && len(req.HTLCInputs) == 0 && len(req.OrderInputs) == 0 {
 		if err := checkSenderSig(tx, sender, req.SenderSig); err != nil {
 			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
 				httpErr(w, 403, "%v", pr)
@@ -1336,8 +1353,32 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 			admitted[spk] = u
 		}
 	}
+	var orders []*store.GatedOrder
+	if len(req.OrderOutputs) > 0 {
+		var ordAdmitted map[string]*store.User
+		ordAdmitted, orders, err = s.admitOrderOutputs(tx, asset, sender, req.OrderOutputs)
+		if err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+				httpErr(w, 403, "%v", pr)
+				return
+			}
+			httpErr(w, 502, "%v", err)
+			return
+		}
+		if admitted == nil {
+			admitted = map[string]*store.User{}
+		}
+		for spk, u := range ordAdmitted {
+			admitted[spk] = u
+		}
+	}
 	if len(req.HTLCInputs) > 0 {
 		s.handleHTLCClaim(w, tx, spent, asset, sender, req.HTLCInputs, dry)
+		return
+	}
+	if len(req.OrderInputs) > 0 {
+		s.handleOrderFill(w, tx, spent, asset, sender, req.OrderInputs, dry, req.Broadcast)
 		return
 	}
 	atomsOut := map[string]uint64{}
@@ -1435,6 +1476,22 @@ func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
 		for _, e := range htlcs {
 			s.st.AppendLog("htlc-lock", map[string]any{"txid": rawTxid, "vout": e.Vout, "seller": e.SellerAID,
 				"buyer": e.BuyerAID, "asset": asset.ID, "atoms": e.Value, "hash": e.Hash, "t_seq": e.TSeq})
+		}
+	}
+	if len(orders) > 0 {
+		if err := s.st.Update(func(st *store.State) error {
+			for _, o := range orders {
+				o.LockTxid = rawTxid
+				st.GatedOrders[o.SPK] = o
+			}
+			return nil
+		}); err != nil {
+			httpErr(w, 500, "record the orders: %v", err)
+			return
+		}
+		for _, o := range orders {
+			s.st.AppendLog("order-place", map[string]any{"txid": rawTxid, "vout": o.Vout, "maker": o.MakerAID,
+				"asset": asset.ID, "expiry": o.Expiry, "order": o.SPK})
 		}
 	}
 	if err := s.registerBoards(boards); err != nil {

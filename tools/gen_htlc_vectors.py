@@ -14,7 +14,8 @@ from test_framework.key import compute_xonly_pubkey
 from test_framework.script import (
     CScript, OP_0, OP_1, OP_CHECKLOCKTIMEVERIFY, OP_CHECKSIG, OP_CHECKSIGVERIFY, OP_DROP, OP_DUP,
     OP_EQUAL, OP_EQUALVERIFY, OP_INSPECTOUTPUTASSET, OP_INSPECTOUTPUTSCRIPTPUBKEY,
-    OP_INSPECTOUTPUTVALUE, OP_PUSHCURRENTINPUTINDEX, OP_SHA256, OP_SIZE, taproot_construct,
+    OP_INSPECTINPUTVALUE, OP_INSPECTOUTPUTVALUE, OP_PUSHCURRENTINPUTINDEX, OP_SHA256, OP_SIZE,
+    taproot_construct,
 )
 
 NUMS = bytes.fromhex("50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
@@ -77,6 +78,26 @@ def main():
         out[name] = described(tap, ["claim", "refund"], {
             "hash": h.hex(), "buyer_x": buyer.hex(), "t_seq": 1_794_423_273,
             "seller_version": version, "seller_program": prog.hex(), "fee_asset": bytes(range(32, 64)).hex(), "value": 5000})
+    # Gated orders: the policy gate over a fill covenant (any bytes here; the
+    # e2e test uses SeqDEX's real one), and a refund home of the whole coin.
+    fill = bytes(range(64, 64 + 40))
+    for name, expiry, claw in (("gated_claw", 1_794_423_273, True), ("gated_noclaw", 2_000_000_000, False)):
+        gate = bytes(CScript([policy, OP_CHECKSIGVERIFY])) + fill
+        refund = CScript([expiry, OP_CHECKLOCKTIMEVERIFY, OP_DROP,
+                          OP_PUSHCURRENTINPUTINDEX, OP_0, OP_EQUALVERIFY,
+                          OP_0, OP_INSPECTOUTPUTSCRIPTPUBKEY, OP_1, OP_EQUALVERIFY, seller_prog, OP_EQUALVERIFY,
+                          OP_0, OP_INSPECTOUTPUTASSET, OP_1, OP_EQUALVERIFY, asset, OP_EQUALVERIFY,
+                          OP_0, OP_INSPECTOUTPUTVALUE, OP_1, OP_EQUALVERIFY,
+                          OP_0, OP_INSPECTINPUTVALUE, OP_1, OP_EQUALVERIFY, OP_EQUAL])
+        leaves = [("fill", CScript(gate)), ("refund", refund)]
+        names = ["fill", "refund"]
+        if claw:
+            leaves.append(("claw", CScript([issuer, OP_CHECKSIGVERIFY, policy, OP_CHECKSIG])))
+            names.append("claw")
+        tap = taproot_construct(NUMS, leaves)
+        out[name] = described(tap, names, {
+            "policy_x": policy.hex(), "issuer_x": issuer.hex() if claw else "", "expiry": expiry,
+            "fill": fill.hex(), "maker_program": seller_prog.hex(), "asset": asset.hex()})
     print(json.dumps(out, indent=1, sort_keys=True))
 
 

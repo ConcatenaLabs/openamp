@@ -45,7 +45,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `GET /v1/users/{aid}/balance?asset=<id>` | Confirmed enclave balance |
 | `POST /v1/transfers` | Build a hosted transfer (fee conversion or sponsorship) |
 | `POST /v1/transfers/{id}/complete` | Submit the holder's signatures, co-sign and broadcast |
-| `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid), including a board into an asset's tree |
+| `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid): a transfer, a trade, a swap HTLC's lock or claim, a gated order's placement or fill, or a board into an asset's tree |
 | `POST /v1/check` | The same request as `/v1/cosign`, judged by every check, with nothing signed, recorded or logged: `{"ok": true, "atoms"}` or the refusal |
 | `POST /v1/tree/leaves/{salt}/exited` | Close a tree leaf its holder took home to its enclave (anyone may report; the chain is the proof) |
 | `GET /v1/assets` | All assets with their contracts |
@@ -193,6 +193,48 @@ A claim may be requested again, for a higher fee or after a stuck transaction, u
 `e2e/swap_htlc.py` runs all of it against a node, with every refusal forced into a block.
 
 **Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded (a co-signed transaction that is not yet mined counts until one of its inputs is spent by another transaction, and again if a reorg undoes that spend: a signature never expires, so neither does its record); the holder cap would be exceeded; or the sender's vested balance is insufficient.
+
+### Gated orders: a resting offer to sell a restricted asset
+
+A holder sells a restricted asset while offline through a **gated order**: its coin sits at a script that only this server's signature fills, and that goes home to it after an expiry. Buyers take it at the price the maker set, each fill judged by every rule.
+
+The order is `P2TR(NUMS, [fill, [refund, claw]])` (no `claw` when the asset has no clawback):
+
+```
+fill  : <K_policy> OP_CHECKSIGVERIFY <a SeqDEX fill covenant>
+refund: <expiry> OP_CHECKLOCKTIMEVERIFY OP_DROP
+        OP_PUSHCURRENTINPUTINDEX OP_0 OP_EQUALVERIFY
+        OP_0 OP_INSPECTOUTPUTSCRIPTPUBKEY OP_1 OP_EQUALVERIFY <maker's enclave program> OP_EQUALVERIFY
+        OP_0 OP_INSPECTOUTPUTASSET OP_1 OP_EQUALVERIFY <asset> OP_EQUALVERIFY
+        OP_0 OP_INSPECTOUTPUTVALUE OP_1 OP_EQUALVERIFY
+        OP_0 OP_INSPECTINPUTVALUE OP_1 OP_EQUALVERIFY OP_EQUAL
+claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
+```
+
+- **The fill** is SeqDEX's tapscript fill covenant (`seqdex` `daemon/pkg/covenant`, `BuildFillLeaf`) behind this server's signature, checked first on a clean stack; the witness is `<policy sig> <fill leaf> <control>`. The covenant, at input `k`, pays the maker at output `2k` at its price and keeps any remainder at the same script at `2k+1`, so the remainder stays gated. The maker's price and payout are its own; this server judges the transaction: the maker as sender, each recipient of the asset by every rule.
+- **The refund** needs no key: after the expiry (a time) the order must be input 0 and output 0 must carry the coin's whole value, read from the input itself because a partial fill leaves less than was placed, home to the maker's enclave. As for a swap HTLC, input 0 and output 0 mean no other covenant in the transaction can count that output as its own.
+- **Claw** is the disclosed power over any enclave.
+
+`openampd/internal/elements/gated.go` builds it; `tools/gen_htlc_vectors.py` checks it against the node's test framework.
+
+**Placing.** The maker co-signs the transaction that funds the order through `POST /v1/cosign`, as its own move, naming the order output with the fill covenant it wraps and its expiry:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<maker>", "inputs": [0], "sender_sig": "<hex>",
+ "order_outputs": [{"output": 0, "fill": "<fill covenant hex>", "expiry": 1794440000}]}
+```
+
+The output is admitted only when it is the script those terms build and the expiry is a time between 1 hour and 30 days ahead. The order then counts as the maker's coin in every balance, holder count and rule, and the placement is logged (`order-place`).
+
+**Filling.** A taker builds the fill with its own inputs signed and asks this server to co-sign and broadcast it in one step, so its signature never outlives its decision:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<maker>", "order_inputs": [{"input": 1}], "broadcast": true}
+```
+
+A fill spends exactly one order and no other coin of the asset. It is refused without `"broadcast": true` (400), at or after the expiry (403 `expired`), and by any rule (403, for example a buyer the asset does not admit). The answer is `{"txid"}`; the fill is recorded against the maker's velocity and logged (`order-fill`). `POST /v1/check` with the same body judges a fill without signing it.
+
+`e2e/gated_order.py` runs it against a node: a fill co-signed and broadcast, a fill without the policy signature and a reused one refused in blocks, the refund refused for every other destination, amount and index, and the collision matrix (the refund against a swap HTLC's refund in both orders, and against the maker's own resting SeqDEX bid in both positions), each refused in a block.
 
 ### An asset's tree
 

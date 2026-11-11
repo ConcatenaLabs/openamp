@@ -29,7 +29,7 @@ issuance or the verifier asset's token, `e2e/damp_two_phase.py` for a change to 
 derive document, `e2e/damp_contracts.py` for a change to a policy's list of contract templates, and
 `e2e/fee_asset.py` for a change to how a fee is funded, and `e2e/eligibility.py` for a change to the
 rules a transfer is judged by or to `GET /v1/eligibility`, `e2e/dvp.py` for a change to `/v1/check` or a broadcast co-sign, and `e2e/swap_htlc.py` (plus
-`tools/gen_htlc_vectors.py`) for a change to the swap HTLC, its fee pot or how a claim is co-signed.
+`tools/gen_htlc_vectors.py`) for a change to the swap HTLC, its fee pot or how a claim is co-signed, and `e2e/gated_order.py` (plus the same generator) for a change to the gated order or how a fill is co-signed.
 
 Deployment: `deploy/DEPLOY.md` plus the systemd units in `deploy/`. The server pulls this repo
 from GitHub and builds there — never edit source on the server, never copy binaries onto it.
@@ -50,6 +50,7 @@ from GitHub and builds there — never edit source on the server, never copy bin
 | `openampd/docs/` | design notes (blinding-key rotation, M2 snapshot service) |
 | `e2e/supply_cap.py` | the supply cap end to end: a real openampd and node, a mint over the cap refused in a block |
 | `e2e/dvp.py` | a trade against another asset in one transaction: `/v1/check` approves and refuses with nothing logged, and `/v1/cosign` with `broadcast` refuses a wrong expiry signer, an expired offer and a wrong input signature, then completes and broadcasts the trade |
+| `e2e/gated_order.py` | the gated order end to end: placement co-signed as the maker's own move, a fill co-signed and broadcast in one step, refusals of a fill without the broadcast, to an account the rules refuse, beside another coin of the asset and after the expiry, fills without or with a reused policy signature refused in blocks, the keyless refund refused for every other destination, amount and index, the collision matrix refused in blocks, and the remainder mined home |
 | `e2e/swap_htlc.py` | the swap HTLC end to end: a lock co-signed as the seller's own move, the claim path's refusals, a claim just before the cut-off mined, none co-signed after it, the keyless refund refused in blocks for every other destination, amount and index, the collision matrix (no refund output also pays another refund or the seller's own resting SeqDEX orders) refused in blocks, each refund mined home alone with the policy server stopped, and a withheld claim refused after it |
 | `e2e/eligibility.py` | `GET /v1/eligibility` end to end: a refusal with its code and the issuer's page, the same refusal from a real co-sign, a grant that makes the transfer settle, a holder cap read from the chain |
 | `e2e/fee_asset.py` | the fee rule end to end: no `-feeasset`, each fee paid in the asset whose largest coin covers the most fees, a node accepting nothing refused, a `-feeasset` the node does not accept refused at start |
