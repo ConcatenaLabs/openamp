@@ -32,6 +32,14 @@ func (s *Server) checkTransfer(tx *elements.Tx, asset *store.Asset, sender *stor
 // exactly as an output at the holder's enclave is.
 func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
 	admitted map[string]*store.User) error {
+	return s.checkTransferExcept(tx, asset, sender, atomsOut, admitted, "")
+}
+
+// checkTransferExcept is checkTransferAdmitting for a re-claim of the HTLC
+// reclaim (its script, hex): that HTLC's earlier claim record is the same
+// movement, so it is not counted again (see checkRulesExcept).
+func (s *Server) checkTransferExcept(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
+	admitted map[string]*store.User, reclaim string) error {
 	if sender.Frozen {
 		return refuseCode("sender_frozen", "sender frozen")
 	}
@@ -90,7 +98,7 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 			return refuseCode("frozen", "recipient %s frozen", u.AID)
 		}
 	}
-	return s.checkRules(asset, sender, recipients, burned, height)
+	return s.checkRulesExcept(asset, sender, recipients, burned, height, reclaim)
 }
 
 // checkRules is the asset's policy over one movement, wherever it happens: on
@@ -100,6 +108,13 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 // holder holds counts, in its enclave and in live leaves alike
 // (holderBalances).
 func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64) error {
+	return s.checkRulesExcept(asset, sender, recipients, burned, height, "")
+}
+
+// checkRulesExcept is checkRules for a re-claim of the HTLC whose script is
+// reclaim (hex, or "" for none). A re-claim replaces that HTLC's earlier
+// claim record, which may never be mined, so velocity does not count it.
+func (s *Server) checkRulesExcept(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64, reclaim string) error {
 	// Pledged collateral (Pignus Tier C). A restricted asset cannot be locked
 	// in a lending covenant -- it may only sit at an enclave output this server
 	// co-signs for -- so the collateral does not move at all and this check is
@@ -219,10 +234,18 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 	// Velocity.
 	if rules.VelocityMaxAtoms > 0 && rules.VelocityWindowBlocks > 0 {
 		var window uint64
+		now := s.now().Unix()
 		s.st.View(func(st *store.State) {
 			for _, rec := range st.Transfers {
-				if rec.Asset == asset.ID && rec.SenderAID == sender.AID &&
-					(rec.Height < 0 || rec.Height > height-rules.VelocityWindowBlocks) {
+				if rec.Asset != asset.ID || rec.SenderAID != sender.AID {
+					continue
+				}
+				// A re-claim replaces the same HTLC's unmined claim; a mined
+				// claim always counts.
+				if reclaim != "" && rec.Kind == "htlc-claim" && rec.ID == reclaim && rec.Height < 0 {
+					continue
+				}
+				if velocityCounts(rec, height, rules.VelocityWindowBlocks, now) {
 					window += rec.Atoms
 				}
 			}
@@ -398,6 +421,13 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 				return
 			}
 			add(hex.EncodeToString(tree.ScriptPubKey()), u.AID)
+		}
+		// A coin in a swap HTLC is its seller's until claimed, and every rule
+		// reading a balance must see it there.
+		for spk, e := range st.HTLCs {
+			if e.Asset == asset.ID {
+				add(spk, e.SellerAID)
+			}
 		}
 	})
 	if scanErr != nil {
@@ -1109,6 +1139,7 @@ func (s *Server) cosignAndBroadcast(p *pendingTransfer, sender *store.User, user
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: txid, Asset: p.asset.ID, SenderAID: sender.AID, Atoms: moved, Height: -1,
+			Inputs: txInputs(p.tx),
 		})
 		return nil
 	})
@@ -1129,9 +1160,18 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		// TreeOutputs names outputs that are boards of the asset's tree, each
 		// with its board record (tree.go): admitted as their holder's.
 		TreeOutputs []treeOutput `json:"tree_outputs,omitempty"`
+		// HTLCOutputs names swap HTLCs the sender locks its coin in
+		// (htlc.go): admitted as the sender's own. HTLCInputs names the one
+		// HTLC a claim spends; sender_aid is then the HTLC's seller.
+		HTLCOutputs []htlcOutput `json:"htlc_outputs,omitempty"`
+		HTLCInputs  []htlcInput  `json:"htlc_inputs,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
+		return
+	}
+	if len(req.HTLCInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.TreeOutputs) > 0) {
+		httpErr(w, 400, "a claim spends one HTLC and nothing else: no inputs, htlc_outputs or tree_outputs beside htlc_inputs")
 		return
 	}
 	senderTree, sender, asset, err := s.enclaveFor(req.SenderAID, req.Asset)
@@ -1232,6 +1272,30 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var htlcs []*store.HTLC
+	if len(req.HTLCOutputs) > 0 {
+		var escAdmitted map[string]*store.User
+		escAdmitted, htlcs, err = s.admitHTLCOutputs(tx, asset, sender, req.HTLCOutputs)
+		if err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+				httpErr(w, 403, "%v", pr)
+				return
+			}
+			httpErr(w, 502, "%v", err)
+			return
+		}
+		if admitted == nil {
+			admitted = map[string]*store.User{}
+		}
+		for spk, u := range escAdmitted {
+			admitted[spk] = u
+		}
+	}
+	if len(req.HTLCInputs) > 0 {
+		s.handleHTLCClaim(w, tx, spent, asset, sender, req.HTLCInputs)
+		return
+	}
 	atomsOut := map[string]uint64{}
 	if err := s.checkTransferAdmitting(tx, asset, sender, atomsOut, admitted); err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
@@ -1279,10 +1343,27 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: rawTxid, Asset: asset.ID, SenderAID: sender.AID, Atoms: sent, Height: -1,
+			Inputs: txInputs(tx),
 		})
 		return nil
 	})
 	s.st.AppendLog("cosign", map[string]any{"txid": rawTxid, "sender": sender.AID, "asset": asset.ID, "atoms": sent})
+	if len(htlcs) > 0 {
+		if err := s.st.Update(func(st *store.State) error {
+			for _, e := range htlcs {
+				e.LockTxid = rawTxid
+				st.HTLCs[e.SPK] = e
+			}
+			return nil
+		}); err != nil {
+			httpErr(w, 500, "record the HTLCs: %v", err)
+			return
+		}
+		for _, e := range htlcs {
+			s.st.AppendLog("htlc-lock", map[string]any{"txid": rawTxid, "vout": e.Vout, "seller": e.SellerAID,
+				"buyer": e.BuyerAID, "asset": asset.ID, "atoms": e.Value, "hash": e.Hash, "t_seq": e.TSeq})
+		}
+	}
 	if err := s.registerBoards(boards); err != nil {
 		httpErr(w, 500, "register the boards: %v", err)
 		return
@@ -1321,4 +1402,39 @@ func saturatingSub(a, b uint64) uint64 {
 		return 0
 	}
 	return a - b
+}
+
+// velocityCounts: a confirmed record counts while its height is inside the
+// window; an unconfirmed one for as long as it is kept: the follower drops it
+// once one of its inputs is spent elsewhere, or counts the HTLC claim that was
+// mined in its place. Only a record written before inputs were kept expires
+// (Expires), or counts while unconfirmed if it has no expiry either.
+func velocityCounts(rec store.TransferRecord, height, window, now int64) bool {
+	if rec.Released > 0 {
+		return false
+	}
+	if rec.Height >= 0 {
+		return rec.Height > height-window
+	}
+	if len(rec.Inputs) > 0 {
+		return true
+	}
+	return rec.Expires == 0 || now < rec.Expires
+}
+
+// txInputs are a transaction's input outpoints as "txid:vout" (display txid).
+func txInputs(tx *elements.Tx) []string {
+	out := make([]string, 0, len(tx.In))
+	for _, in := range tx.In {
+		out = append(out, outpointString(in.Prevout))
+	}
+	return out
+}
+
+func outpointString(o elements.OutPoint) string {
+	h := o.Hash
+	for i, j := 0, len(h)-1; i < j; i, j = i+1, j-1 {
+		h[i], h[j] = h[j], h[i]
+	}
+	return fmt.Sprintf("%s:%d", hex.EncodeToString(h[:]), o.N)
 }

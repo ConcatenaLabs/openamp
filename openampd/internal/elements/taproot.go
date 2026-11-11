@@ -93,8 +93,7 @@ type Leaf struct {
 	Script []byte
 }
 
-// TapTree is a constructed two-level tree (one or two leaves; all openampd
-// enclave trees are at most two leaves).
+// TapTree is a constructed taproot tree of named tapscript leaves.
 type TapTree struct {
 	Internal  [32]byte
 	OutputKey [32]byte
@@ -109,25 +108,24 @@ type LeafInfo struct {
 	MerkleBranch []byte // sibling hashes, leaf to root
 }
 
-// BuildTree constructs a taproot tree from one or two leaves with the given
-// internal key. Matches test_framework taproot_construct for these shapes.
+// BuildTree constructs a taproot tree of the given leaves with the given
+// internal key. The shape is the test framework's taproot_construct over a
+// flat list: the list splits at len/2, left half first, recursively, so one
+// leaf is the root, two are siblings, and three are [a, [b, c]].
 func BuildTree(internal [32]byte, leaves ...Leaf) (*TapTree, error) {
-	if len(leaves) == 0 || len(leaves) > 2 {
-		return nil, fmt.Errorf("BuildTree supports 1 or 2 leaves, got %d", len(leaves))
+	if len(leaves) == 0 {
+		return nil, fmt.Errorf("BuildTree needs at least one leaf")
 	}
 	tree := &TapTree{Internal: internal, Leaves: map[string]*LeafInfo{}}
 	infos := make([]*LeafInfo, len(leaves))
 	for i, l := range leaves {
+		if _, dup := tree.Leaves[l.Name]; dup {
+			return nil, fmt.Errorf("BuildTree: two leaves named %q", l.Name)
+		}
 		infos[i] = &LeafInfo{Script: l.Script, Hash: TapLeafHash(l.Script)}
 		tree.Leaves[l.Name] = infos[i]
 	}
-	if len(leaves) == 1 {
-		tree.Root = infos[0].Hash
-	} else {
-		tree.Root = TapBranchHash(infos[0].Hash, infos[1].Hash)
-		infos[0].MerkleBranch = infos[1].Hash[:]
-		infos[1].MerkleBranch = infos[0].Hash[:]
-	}
+	tree.Root = buildNode(infos)
 	out, parity, err := TweakPubKey(internal, tree.Root[:])
 	if err != nil {
 		return nil, err
@@ -135,6 +133,23 @@ func BuildTree(internal [32]byte, leaves ...Leaf) (*TapTree, error) {
 	tree.OutputKey = out
 	tree.Parity = parity
 	return tree, nil
+}
+
+// buildNode hashes a subtree and appends, to every leaf under each side, the
+// hash of the other side, so a leaf's branch runs from the leaf to the root.
+func buildNode(infos []*LeafInfo) [32]byte {
+	if len(infos) == 1 {
+		return infos[0].Hash
+	}
+	split := len(infos) / 2
+	left, right := buildNode(infos[:split]), buildNode(infos[split:])
+	for _, l := range infos[:split] {
+		l.MerkleBranch = append(l.MerkleBranch, right[:]...)
+	}
+	for _, r := range infos[split:] {
+		r.MerkleBranch = append(r.MerkleBranch, left[:]...)
+	}
+	return TapBranchHash(left, right)
 }
 
 // ScriptPubKey is the segwit v1 output script OP_1 <32-byte output key>.

@@ -134,6 +134,9 @@ type Server struct {
 	treeTool TreeTool
 	// treeLocks holds one mutex per asset over its tree's register.
 	treeLocks sync.Map
+
+	// clock replaces time.Now in tests; nil in the daemon.
+	clock func() time.Time
 }
 
 // pendingTTL bounds how long a hosted-transfer build waits for the caller's

@@ -1,5 +1,7 @@
 # Followup: atomic BTC to restricted-asset swaps via adaptor signatures
 
+**Superseded, not to be built.** The swap HTLC in the README ("Swap HTLCs") replaces this design. It is a hash lock and a keyless refund in script, built on the hash-locked swap SeqDEX already runs, with no new cryptography. This design's latched reservation lets a buyer keep both legs (openamp #50). It stays here as the record of why it was not built.
+
 **This is a followup to `spec/venue-wallet-integration.md`, section 2.4b.** It specifies the "true atomicity" path that 2.4b names as an open design item. Read 2.4b first; this document assumes its vocabulary (enclave, AID, `/v1/cosign`, the 2-of-2 transfer leaf, why a restricted leg can never sit in an HTLC output). Audience: the agent building SeqDEX restricted-asset markets and the SWK/wallet work behind them. Status: a design specification to implement, not yet built. Every openampd claim carries a code reference into `~/openamp/openampd`.
 
 The goal: a buyer holding native Bitcoin (parent chain, testnet4) acquires a SeqPal-managed restricted asset in a trade that is atomic (either both legs happen or neither), with no trusted swap escrow, no change to the enclave script, and eligibility still enforced by the policy server. Payment is orthogonal to eligibility: the policy server constrains who may hold the asset, never what the buyer paid with.

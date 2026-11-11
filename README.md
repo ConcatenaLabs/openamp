@@ -125,7 +125,59 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 
 Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <leaf script> <control block>`.
 
-**Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded; the holder cap would be exceeded; or the sender's vested balance is insufficient.
+### Swap HTLCs: a restricted asset for on-chain BTC
+
+A restricted asset trades for on-chain bitcoin through a hash-locked swap whose Sequentia side is a **swap HTLC**. The buyer, who pays the bitcoin, holds a secret `s` with `H = SHA256(s)`, and locks its bitcoin first. The seller then locks the asset in an HTLC for that buyer, and a small **fee pot** of an accepted fee asset beside it. The buyer claims both together with `s`, and the seller reads `s` from the chain to take the bitcoin. Every lock is a time (Unix time, at least 500,000,000), so both chains run on one clock.
+
+The HTLC is `P2TR(NUMS, [claim, [refund, claw]])` (no `claw` when the asset has no clawback):
+
+```
+claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
+refund: <T_seq> OP_CHECKLOCKTIMEVERIFY OP_DROP
+        OP_PUSHCURRENTINPUTINDEX OP_0 OP_EQUALVERIFY
+        OP_PUSHCURRENTINPUTINDEX OP_DUP OP_DUP
+        OP_INSPECTOUTPUTSCRIPTPUBKEY OP_1 OP_EQUALVERIFY <seller's enclave program> OP_EQUALVERIFY
+        OP_INSPECTOUTPUTASSET OP_1 OP_EQUALVERIFY <asset> OP_EQUALVERIFY
+        OP_INSPECTOUTPUTVALUE OP_1 OP_EQUALVERIFY <value, 8 bytes LE> OP_EQUAL
+claw  : <K_issuer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
+```
+
+- **The claim** needs the secret, the buyer's key and this server's signature. That signature is the transfer decision: every rule, with the seller as sender and the buyer as recipient.
+- **The refund** needs no key at all. After `T_seq` anyone can send the HTLC's whole amount home to the seller's enclave, and nowhere else: the HTLC must be input 0 and output 0 must carry it home. So no freeze, outage or refusal of this server can keep a coin from going home, and a buyer cannot outwait the refund with a co-signed claim it withholds. A frozen seller's coin comes home frozen, because every move from an enclave needs this server.
+- **Input 0 and output 0, so no output counts twice.** A keyless path must never accept an output that another covenant in the same transaction also counts as its own. A refund to output 0 from any input would share it with a second refund of the same value. A refund to the output at its own input index would share output `2k` with a SeqDEX order at input `k`, which pays its maker there, so a taker could fill the seller's own resting order with the seller's own refund. With the refund at input 0, one refund fits in a transaction, and every covenant here that pays relative to its own index (SeqDEX orders, OpenDAMP's guarded order) pays outputs 2 and above from any input after 0. Each refund is therefore a transaction of its own; anyone adds a fee coin after it.
+- **The fee pot** is `P2TR(NUMS, [claim: OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY <K_buyer> OP_CHECKSIG, refund: the same keyless way home, input 0 to output 0, to the seller's own v1 (taproot) program])`. Never a v0 program: one may be a staking controller's key, which a split pool's claim counts as its own payment to that delegator. It pays the claim's fee, so a buyer holding only bitcoin can claim. Its witness carries `s` in plain tapscript.
+
+`openampd/internal/elements/htlc.go` builds both; `tools/gen_htlc_vectors.py` checks them against the node's test framework.
+
+**Locking.** The seller co-signs its lock transaction through `POST /v1/cosign`, naming each HTLC output:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "inputs": [0],
+ "htlc_outputs": [{"output": 0, "buyer_aid": "<buyer>", "hash": "<H hex>", "t_seq": 1794432408}]}
+```
+
+An HTLC output is admitted only when all of these hold:
+- it is the script those terms, the asset and the output's own explicit amount describe;
+- the buyer is registered, not frozen, and could receive the amount now (the same rule check a co-sign runs);
+- `t_seq` is a time between 2 hours and 7 days ahead, judged by this server's clock or the chain's median time past, whichever is later.
+
+The HTLC then counts as the seller's own coin in every balance, holder count and rule. The lock is logged (`htlc-lock`).
+
+**Claiming.** The buyer asks for the claim's policy signature through the same endpoint, naming the HTLC:
+
+```json
+{"tx": "...", "asset": "<id>", "sender_aid": "<seller>", "htlc_inputs": [{"input": 0}]}
+```
+
+A claim is final: no lock time and every input's sequence final, so it is valid at once (a claim that could be mined only at `T_seq` could lose to the refund with the secret out). It spends exactly one HTLC and no other coin of the asset. It pays the HTLC's whole amount to the buyer's enclave in one output. Every rule is judged at this moment. The answer is `{"sigs": [{"input", "sighash", "policy_sig", "leaf", "control"}], "cutoff": <unix time>}`. The buyer completes the witness, `<policy sig> <buyer sig> <s> <claim leaf> <control>`, and broadcasts. This server never sees `s`, because a sighash does not commit to the witness.
+
+A claim may be requested again, for a higher fee or after a stuck transaction, until one is mined. A re-claim is judged without the same HTLC's unmined claim, which is the same movement, and replaces that record; claims are recorded by the HTLC's outpoint, so two HTLCs of the same terms never share one. Whichever co-signed claim is mined counts at its height; the HTLC's refund or claw releases the record, until a reorg undoes that spend, when the record counts again. A claim is plain: an output carrying a proof or a nonce is refused, because the node would refuse the claim.
+
+**No claim is co-signed after the cut-off, one hour before `T_seq`** (refused with code `claim_cutoff`). The refund is keyless, so a claim revealed at the last moment could be beaten by it. The refund is judged by the median time of the 11 blocks before it, so honest producers give a claim broadcast at the cut-off about an hour of blocks. Producers that stamp their blocks up to two hours ahead (as far as a node accepts) can pass `T_seq` in about six blocks, so the cut-off is a last resort, not a guarantee: a wallet claims as soon as the lock is final. A buyer that misses the cut-off keeps its bitcoin, refunded on the Bitcoin side, and the seller keeps the asset.
+
+`e2e/swap_htlc.py` runs all of it against a node, with every refusal forced into a block.
+
+**Policy engine.** Both approval paths re-derive everything from the transaction and the chain (request metadata is never trusted) and refuse when: the sender or a non-issuer recipient is frozen; any output's asset or value is blinded; the restricted asset appears in a fee output; an output pays the asset to a non-enclave script (OP_RETURN burns allowed only if the contract permits them); a recipient lacks a required category; the asset is inside its lock-in window (issuer-bound conversion exempt if configured); the sender's velocity window would be exceeded (a co-signed transaction that is not yet mined counts until one of its inputs is spent by another transaction, and again if a reorg undoes that spend: a signature never expires, so neither does its record); the holder cap would be exceeded; or the sender's vested balance is insufficient.
 
 ### An asset's tree
 

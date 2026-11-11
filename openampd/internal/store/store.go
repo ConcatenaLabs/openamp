@@ -247,7 +247,37 @@ type TransferRecord struct {
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
 	Kind      string `json:"kind,omitempty"`
-	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"
+	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the HTLC's outpoint (txid:vout), for kind "htlc-claim"
+	// Inputs are the transaction's input outpoints (txid:vout). An unconfirmed
+	// record counts toward the sender's velocity until one of them is spent
+	// in a block by another transaction, which makes this one impossible: a
+	// signature never expires, so neither does its record (#49, #65).
+	Inputs []string `json:"inputs,omitempty"`
+	// Expires (Unix seconds) applies only to an unconfirmed record written
+	// without Inputs, before they were kept: it stops counting then.
+	Expires int64 `json:"expires,omitempty"`
+	// Released is the height of the block whose spend made this unconfirmed
+	// record impossible (an input spent elsewhere, an HTLC refunded or
+	// clawed); 0 while it is not. A released record counts for nothing, and
+	// is kept until no fork can undo that block: a fork at or below it makes
+	// the record pending again.
+	Released int64 `json:"released,omitempty"`
+}
+
+// HTLC is a swap HTLC of a restricted asset: its seller's coin, waiting
+// for one named buyer to claim it with the secret behind Hash before TSeq, or
+// for anyone to send it home to the seller's enclave after TSeq. Everything
+// its script commits to is here, so the server rebuilds it to recognise it.
+type HTLC struct {
+	SPK       string `json:"spk"`
+	Asset     string `json:"asset"`
+	SellerAID string `json:"seller_aid"`
+	BuyerAID  string `json:"buyer_aid"`
+	Hash      string `json:"hash"`
+	TSeq      uint32 `json:"t_seq"`
+	Value     uint64 `json:"value"`
+	LockTxid  string `json:"lock_txid"`
+	Vout      uint32 `json:"vout"`
 }
 
 type LogEntry struct {
@@ -340,10 +370,14 @@ type State struct {
 	// documents written before trees existed; initialised on load.
 	TreeLeaves    map[string]*TreeLeaf     `json:"tree_leaves,omitempty"`
 	TreeTransfers map[string]*TreeTransfer `json:"tree_transfers,omitempty"`
-	RecentBlocks  []string                 `json:"recent_blocks"` // newest last
-	Height        int64                    `json:"height"`
-	LogHead       string                   `json:"log_head"`
-	LogSeq        uint64                   `json:"log_seq"`
+	// HTLCs are the swap HTLCs this server admitted (a restricted asset
+	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
+	// seller's coin until claimed. Absent on older documents; initialised on load.
+	HTLCs        map[string]*HTLC `json:"htlcs,omitempty"`
+	RecentBlocks []string         `json:"recent_blocks"` // newest last
+	Height       int64            `json:"height"`
+	LogHead      string           `json:"log_head"`
+	LogSeq       uint64           `json:"log_seq"`
 }
 
 type Store struct {
@@ -413,6 +447,9 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.state.TreeTransfers == nil {
 		s.state.TreeTransfers = map[string]*TreeTransfer{}
+	}
+	if s.state.HTLCs == nil {
+		s.state.HTLCs = map[string]*HTLC{}
 	}
 	return s, nil
 }
