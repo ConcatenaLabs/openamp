@@ -12,7 +12,7 @@ import (
 	"github.com/ConcatenaLabs/openamp/openampd/internal/store"
 )
 
-type escrowFixture struct {
+type htlcFixture struct {
 	s             *Server
 	st            *store.Store
 	asset         *store.Asset
@@ -23,10 +23,10 @@ type escrowFixture struct {
 	tSeq          uint32
 }
 
-func newEscrowFixture(t *testing.T, rules store.Rules) *escrowFixture {
+func newHTLCFixture(t *testing.T, rules store.Rules) *htlcFixture {
 	t.Helper()
 	s, st, _ := newOA3Server(t)
-	f := &escrowFixture{s: s, st: st}
+	f := &htlcFixture{s: s, st: st}
 	issuer := regUser(t, st, nil)
 	f.seller = regUser(t, st, []string{"kyc:eu"})
 	f.buyer = regUser(t, st, []string{"kyc:eu"})
@@ -40,28 +40,28 @@ func newEscrowFixture(t *testing.T, rules store.Rules) *escrowFixture {
 	return f
 }
 
-func (f *escrowFixture) escrowSpk(t *testing.T, buyer *store.User, hash [32]byte, tSeq uint32, value uint64) []byte {
+func (f *htlcFixture) htlcSpk(t *testing.T, buyer *store.User, hash [32]byte, tSeq uint32, value uint64) []byte {
 	t.Helper()
-	tree, err := f.s.escrowTree(f.asset, f.seller, buyer, hash, tSeq, value)
+	tree, err := f.s.htlcTree(f.asset, f.seller, buyer, hash, tSeq, value)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return tree.ScriptPubKey()
 }
 
-func (f *escrowFixture) out(spk []byte, value uint64) *elements.TxOut {
+func (f *htlcFixture) out(spk []byte, value uint64) *elements.TxOut {
 	return &elements.TxOut{
 		Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(value),
 		Nonce: elements.NullNonce(), ScriptPubKey: spk,
 	}
 }
 
-func (f *escrowFixture) lockTx(t *testing.T, value uint64) *elements.Tx {
-	return &elements.Tx{Version: 2, Out: []*elements.TxOut{f.out(f.escrowSpk(t, f.buyer, f.hash, f.tSeq, value), value)}}
+func (f *htlcFixture) lockTx(t *testing.T, value uint64) *elements.Tx {
+	return &elements.Tx{Version: 2, Out: []*elements.TxOut{f.out(f.htlcSpk(t, f.buyer, f.hash, f.tSeq, value), value)}}
 }
 
-func (f *escrowFixture) req() []escrowOutput {
-	return []escrowOutput{{Output: 0, BuyerAID: f.buyer.AID, Hash: hex.EncodeToString(f.hash[:]), TSeq: f.tSeq}}
+func (f *htlcFixture) req() []htlcOutput {
+	return []htlcOutput{{Output: 0, BuyerAID: f.buyer.AID, Hash: hex.EncodeToString(f.hash[:]), TSeq: f.tSeq}}
 }
 
 func wantRefusal(t *testing.T, err error, code string) {
@@ -72,18 +72,18 @@ func wantRefusal(t *testing.T, err error, code string) {
 	}
 }
 
-// The lock: the escrow its terms describe, for a registered buyer who could
+// The lock: the HTLC its terms describe, for a registered buyer who could
 // receive it now, admitted as the seller's own coin.
-func TestEscrowLockAdmission(t *testing.T) {
-	f := newEscrowFixture(t, store.Rules{AllowedCategories: []string{"kyc:eu"}})
-	admitted, recs, err := f.s.admitEscrowOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+func TestHTLCLockAdmission(t *testing.T) {
+	f := newHTLCFixture(t, store.Rules{AllowedCategories: []string{"kyc:eu"}})
+	admitted, recs, err := f.s.admitHTLCOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(recs) != 1 || recs[0].Value != 1000 || recs[0].BuyerAID != f.buyer.AID || admitted[recs[0].SPK].AID != f.seller.AID {
 		t.Fatalf("admitted %v, records %+v", admitted, recs[0])
 	}
-	// The escrow is the seller's own coin: the lock moves nothing to anyone.
+	// The HTLC is the seller's own coin: the lock moves nothing to anyone.
 	atoms := map[string]uint64{}
 	if err := f.s.checkTransferAdmitting(f.lockTx(t, 1000), f.asset, f.seller, atoms, admitted); err != nil || len(atoms) != 0 {
 		t.Fatalf("lock judged as a transfer: %v %v", err, atoms)
@@ -91,25 +91,25 @@ func TestEscrowLockAdmission(t *testing.T) {
 
 	cases := []struct {
 		name string
-		edit func(r []escrowOutput, tx *elements.Tx)
+		edit func(r []htlcOutput, tx *elements.Tx)
 		code string
 	}{
-		{"terms of another hash", func(r []escrowOutput, tx *elements.Tx) { r[0].Hash = strings.Repeat("ab", 32) }, "escrow"},
-		{"a height t_seq", func(r []escrowOutput, tx *elements.Tx) { r[0].TSeq = 499_999_999 }, "escrow"},
-		{"t_seq too soon", func(r []escrowOutput, tx *elements.Tx) { r[0].TSeq = uint32(f.now.Add(90 * time.Minute).Unix()) }, "escrow"},
-		{"t_seq too far", func(r []escrowOutput, tx *elements.Tx) { r[0].TSeq = uint32(f.now.Add(8 * 24 * time.Hour).Unix()) }, "escrow"},
-		{"unregistered buyer", func(r []escrowOutput, tx *elements.Tx) { r[0].BuyerAID = strings.Repeat("cd", 20) }, "unregistered"},
-		{"the seller as buyer", func(r []escrowOutput, tx *elements.Tx) { r[0].BuyerAID = f.seller.AID }, "escrow"},
-		{"output out of range", func(r []escrowOutput, tx *elements.Tx) { r[0].Output = 3 }, "escrow"},
-		{"another asset", func(r []escrowOutput, tx *elements.Tx) {
+		{"terms of another hash", func(r []htlcOutput, tx *elements.Tx) { r[0].Hash = strings.Repeat("ab", 32) }, "htlc"},
+		{"a height t_seq", func(r []htlcOutput, tx *elements.Tx) { r[0].TSeq = 499_999_999 }, "htlc"},
+		{"t_seq too soon", func(r []htlcOutput, tx *elements.Tx) { r[0].TSeq = uint32(f.now.Add(90 * time.Minute).Unix()) }, "htlc"},
+		{"t_seq too far", func(r []htlcOutput, tx *elements.Tx) { r[0].TSeq = uint32(f.now.Add(8 * 24 * time.Hour).Unix()) }, "htlc"},
+		{"unregistered buyer", func(r []htlcOutput, tx *elements.Tx) { r[0].BuyerAID = strings.Repeat("cd", 20) }, "unregistered"},
+		{"the seller as buyer", func(r []htlcOutput, tx *elements.Tx) { r[0].BuyerAID = f.seller.AID }, "htlc"},
+		{"output out of range", func(r []htlcOutput, tx *elements.Tx) { r[0].Output = 3 }, "htlc"},
+		{"another asset", func(r []htlcOutput, tx *elements.Tx) {
 			tx.Out[0].Asset = elements.ExplicitAsset(elements.MustHex32(strings.Repeat("99", 32)))
-		}, "escrow"},
+		}, "htlc"},
 	}
 	for _, c := range cases {
 		r := f.req()
 		tx := f.lockTx(t, 1000)
 		c.edit(r, tx)
-		_, _, err := f.s.admitEscrowOutputs(tx, f.asset, f.seller, r)
+		_, _, err := f.s.admitHTLCOutputs(tx, f.asset, f.seller, r)
 		if err == nil {
 			t.Fatalf("%s: admitted", c.name)
 		}
@@ -121,59 +121,59 @@ func TestEscrowLockAdmission(t *testing.T) {
 	noCat := regUser(t, f.st, nil)
 	r := f.req()
 	r[0].BuyerAID = noCat.AID
-	tx := &elements.Tx{Version: 2, Out: []*elements.TxOut{f.out(f.escrowSpk(t, noCat, f.hash, f.tSeq, 1000), 1000)}}
-	_, _, err = f.s.admitEscrowOutputs(tx, f.asset, f.seller, r)
+	tx := &elements.Tx{Version: 2, Out: []*elements.TxOut{f.out(f.htlcSpk(t, noCat, f.hash, f.tSeq, 1000), 1000)}}
+	_, _, err = f.s.admitHTLCOutputs(tx, f.asset, f.seller, r)
 	wantRefusal(t, err, "category")
 	if err := f.st.Update(func(x *store.State) error { x.Users[f.buyer.AID].Frozen = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = f.s.admitEscrowOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+	_, _, err = f.s.admitHTLCOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
 	wantRefusal(t, err, "frozen")
 }
 
-// The claim: one escrow of the sender's, before the cut-off, its whole amount
+// The claim: one HTLC of the sender's, before the cut-off, its whole amount
 // to its buyer's enclave and nowhere else.
-func TestEscrowClaim(t *testing.T) {
-	f := newEscrowFixture(t, store.Rules{})
-	_, recs, err := f.s.admitEscrowOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+func TestHTLCClaim(t *testing.T) {
+	f := newHTLCFixture(t, store.Rules{})
+	_, recs, err := f.s.admitHTLCOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.st.Update(func(x *store.State) error { x.Escrows[recs[0].SPK] = recs[0]; return nil }); err != nil {
+	if err := f.st.Update(func(x *store.State) error { x.HTLCs[recs[0].SPK] = recs[0]; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	escrowSpk, _ := hex.DecodeString(recs[0].SPK)
+	htlcSpk, _ := hex.DecodeString(recs[0].SPK)
 	buyerSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.buyer, f.asset))
 	otherSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.other, f.asset))
 	sellerSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.seller, f.asset))
 	feeSpk := []byte{0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
-	spentEscrow := &elements.SpentOutput{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: escrowSpk}
+	spentHTLC := &elements.SpentOutput{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: htlcSpk}
 	spentFee := &elements.SpentOutput{Asset: elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32))), Value: elements.ExplicitValue(5000), ScriptPubKey: feeSpk}
 	claimTx := func(outs ...*elements.TxOut) *elements.Tx {
 		return &elements.Tx{Version: 2, In: []*elements.TxIn{{}, {}}, Out: outs}
 	}
-	spent := []*elements.SpentOutput{spentEscrow, spentFee}
-	ins := []escrowInput{{Input: 0}}
+	spent := []*elements.SpentOutput{spentHTLC, spentFee}
+	ins := []htlcInput{{Input: 0}}
 
-	if _, _, idx, err := f.s.escrowClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins); err != nil || idx != 0 {
+	if _, _, idx, err := f.s.htlcClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins); err != nil || idx != 0 {
 		t.Fatalf("a good claim: %v", err)
 	}
 	for name, c := range map[string]struct {
 		tx     *elements.Tx
 		spent  []*elements.SpentOutput
 		seller *store.User
-		ins    []escrowInput
+		ins    []htlcInput
 	}{
-		"to another holder":          {claimTx(f.out(otherSpk, 1000)), spent, f.seller, ins},
-		"back to the seller":         {claimTx(f.out(sellerSpk, 1000)), spent, f.seller, ins},
-		"one atom short":             {claimTx(f.out(buyerSpk, 999)), spent, f.seller, ins},
-		"split in two":               {claimTx(f.out(buyerSpk, 500), f.out(buyerSpk, 500)), spent, f.seller, ins},
-		"named as another's escrow":  {claimTx(f.out(buyerSpk, 1000)), spent, f.other, ins},
-		"an input that is no escrow": {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []escrowInput{{Input: 1}}},
-		"two escrows named":          {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []escrowInput{{Input: 0}, {Input: 1}}},
-		"another coin of the asset":  {claimTx(f.out(buyerSpk, 1000)), []*elements.SpentOutput{spentEscrow, {Asset: spentEscrow.Asset, Value: elements.ExplicitValue(7), ScriptPubKey: sellerSpk}}, f.seller, ins},
+		"to another holder":         {claimTx(f.out(otherSpk, 1000)), spent, f.seller, ins},
+		"back to the seller":        {claimTx(f.out(sellerSpk, 1000)), spent, f.seller, ins},
+		"one atom short":            {claimTx(f.out(buyerSpk, 999)), spent, f.seller, ins},
+		"split in two":              {claimTx(f.out(buyerSpk, 500), f.out(buyerSpk, 500)), spent, f.seller, ins},
+		"named as another's HTLC":   {claimTx(f.out(buyerSpk, 1000)), spent, f.other, ins},
+		"an input that is no HTLC":  {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []htlcInput{{Input: 1}}},
+		"two HTLCs named":           {claimTx(f.out(buyerSpk, 1000)), spent, f.seller, []htlcInput{{Input: 0}, {Input: 1}}},
+		"another coin of the asset": {claimTx(f.out(buyerSpk, 1000)), []*elements.SpentOutput{spentHTLC, {Asset: spentHTLC.Asset, Value: elements.ExplicitValue(7), ScriptPubKey: sellerSpk}}, f.seller, ins},
 	} {
-		if _, _, _, err := f.s.escrowClaim(c.tx, c.spent, f.asset, c.seller, c.ins); err == nil {
+		if _, _, _, err := f.s.htlcClaim(c.tx, c.spent, f.asset, c.seller, c.ins); err == nil {
 			t.Fatalf("%s: claim accepted", name)
 		}
 	}
@@ -181,37 +181,37 @@ func TestEscrowClaim(t *testing.T) {
 	// The cut-off: an hour before t_seq, by this server's clock or the chain's.
 	tSeq := time.Unix(int64(f.tSeq), 0)
 	f.now = tSeq.Add(-claimCutoff - time.Second)
-	if _, _, _, err := f.s.escrowClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins); err != nil {
+	if _, _, _, err := f.s.htlcClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins); err != nil {
 		t.Fatalf("a claim a second before the cut-off: %v", err)
 	}
 	f.now = tSeq.Add(-claimCutoff)
-	_, _, _, err = f.s.escrowClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins)
+	_, _, _, err = f.s.htlcClaim(claimTx(f.out(buyerSpk, 1000)), spent, f.asset, f.seller, ins)
 	wantRefusal(t, err, "claim_cutoff")
 }
 
-// Velocity and claims. A re-claim of the same escrow (a higher fee, after a
+// Velocity and claims. A re-claim of the same HTLC (a higher fee, after a
 // stuck claim) is the same movement as the first claim and is judged without
 // it; a claim record that is never mined stops counting at T_seq, and any
 // other unconfirmed record at its expiry (#49).
-func TestEscrowReclaimVelocity(t *testing.T) {
-	f := newEscrowFixture(t, store.Rules{VelocityMaxAtoms: 1500, VelocityWindowBlocks: 100})
-	_, recs, err := f.s.admitEscrowOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
+func TestHTLCReclaimVelocity(t *testing.T) {
+	f := newHTLCFixture(t, store.Rules{VelocityMaxAtoms: 1500, VelocityWindowBlocks: 100})
+	_, recs, err := f.s.admitHTLCOutputs(f.lockTx(t, 1000), f.asset, f.seller, f.req())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := f.st.Update(func(x *store.State) error {
 		x.Height = 500
-		x.Escrows[recs[0].SPK] = recs[0]
+		x.HTLCs[recs[0].SPK] = recs[0]
 		// 400 atoms the seller sent earlier, mined inside the window.
 		x.Transfers = append(x.Transfers, store.TransferRecord{Txid: "aa", Asset: f.asset.ID, SenderAID: f.seller.AID, Atoms: 400, Height: 450})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	escrowSpk, _ := hex.DecodeString(recs[0].SPK)
+	htlcSpk, _ := hex.DecodeString(recs[0].SPK)
 	buyerSpk, _ := hex.DecodeString(enclaveSpk(t, f.s, f.buyer, f.asset))
 	spent := []*elements.SpentOutput{
-		{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: escrowSpk},
+		{Asset: elements.ExplicitAsset(elements.MustHex32(f.asset.ID)), Value: elements.ExplicitValue(1000), ScriptPubKey: htlcSpk},
 		{Asset: elements.ExplicitAsset(elements.MustHex32(strings.Repeat("44", 32))), Value: elements.ExplicitValue(5000), ScriptPubKey: []byte{0x51, 0x20, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}},
 	}
 	claim := func(fee uint64) *elements.Tx {
@@ -225,7 +225,7 @@ func TestEscrowReclaimVelocity(t *testing.T) {
 	f.s.signer = stubPolicySigner{}
 	cosign := func(tx *elements.Tx) int {
 		w := httptest.NewRecorder()
-		f.s.handleEscrowClaim(w, tx, spent, f.asset, f.seller, []escrowInput{{Input: 0}})
+		f.s.handleHTLCClaim(w, tx, spent, f.asset, f.seller, []htlcInput{{Input: 0}})
 		if w.Code != 200 {
 			t.Logf("co-sign: %d %s", w.Code, w.Body.String())
 		}
@@ -237,12 +237,12 @@ func TestEscrowReclaimVelocity(t *testing.T) {
 	// The re-claim at a higher fee: 400 + 1000 is inside 1500, whereas
 	// counting the first claim as well would be 2400.
 	if code := cosign(claim(300)); code != 200 {
-		t.Fatalf("re-claim of the same escrow refused: %d", code)
+		t.Fatalf("re-claim of the same HTLC refused: %d", code)
 	}
 	n := 0
 	f.s.st.View(func(x *store.State) {
 		for _, r := range x.Transfers {
-			if r.Kind == "escrow-claim" {
+			if r.Kind == "htlc-claim" {
 				n++
 			}
 		}
@@ -262,7 +262,7 @@ func TestEscrowReclaimVelocity(t *testing.T) {
 	// Mined late after all: counted again, at its height.
 	if err := f.st.Update(func(x *store.State) error {
 		for i := range x.Transfers {
-			if x.Transfers[i].Kind == "escrow-claim" {
+			if x.Transfers[i].Kind == "htlc-claim" {
 				x.Transfers[i].Height = 499
 			}
 		}

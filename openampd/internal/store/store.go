@@ -247,7 +247,7 @@ type TransferRecord struct {
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
 	Kind      string `json:"kind,omitempty"`
-	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the escrow, for kind "escrow-claim"
+	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the HTLC, for kind "htlc-claim"
 	// Expires (Unix seconds): an unconfirmed record stops counting toward the
 	// sender's velocity at this time. A co-signed transaction that is never
 	// broadcast must not hold the sender's allowance forever; one broadcast
@@ -255,11 +255,11 @@ type TransferRecord struct {
 	Expires int64 `json:"expires,omitempty"`
 }
 
-// Escrow is a swap escrow of a restricted asset: its seller's coin, waiting
+// HTLC is a swap HTLC of a restricted asset: its seller's coin, waiting
 // for one named buyer to claim it with the secret behind Hash before TSeq, or
 // for anyone to send it home to the seller's enclave after TSeq. Everything
 // its script commits to is here, so the server rebuilds it to recognise it.
-type Escrow struct {
+type HTLC struct {
 	SPK       string `json:"spk"`
 	Asset     string `json:"asset"`
 	SellerAID string `json:"seller_aid"`
@@ -361,14 +361,14 @@ type State struct {
 	// documents written before trees existed; initialised on load.
 	TreeLeaves    map[string]*TreeLeaf     `json:"tree_leaves,omitempty"`
 	TreeTransfers map[string]*TreeTransfer `json:"tree_transfers,omitempty"`
-	// Escrows are the swap escrows this server admitted (a restricted asset
+	// HTLCs are the swap HTLCs this server admitted (a restricted asset
 	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
 	// seller's coin until claimed. Absent on older documents; initialised on load.
-	Escrows      map[string]*Escrow `json:"escrows,omitempty"`
-	RecentBlocks []string           `json:"recent_blocks"` // newest last
-	Height       int64              `json:"height"`
-	LogHead      string             `json:"log_head"`
-	LogSeq       uint64             `json:"log_seq"`
+	HTLCs        map[string]*HTLC `json:"htlcs,omitempty"`
+	RecentBlocks []string         `json:"recent_blocks"` // newest last
+	Height       int64            `json:"height"`
+	LogHead      string           `json:"log_head"`
+	LogSeq       uint64           `json:"log_seq"`
 }
 
 type Store struct {
@@ -439,8 +439,8 @@ func Open(dir string) (*Store, error) {
 	if s.state.TreeTransfers == nil {
 		s.state.TreeTransfers = map[string]*TreeTransfer{}
 	}
-	if s.state.Escrows == nil {
-		s.state.Escrows = map[string]*Escrow{}
+	if s.state.HTLCs == nil {
+		s.state.HTLCs = map[string]*HTLC{}
 	}
 	return s, nil
 }

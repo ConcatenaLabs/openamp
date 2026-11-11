@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-type escrowVec struct {
+type htlcVec struct {
 	Hash          string `json:"hash"`
 	BuyerX        string `json:"buyer_x"`
 	PolicyX       string `json:"policy_x"`
@@ -27,20 +27,20 @@ type escrowVec struct {
 	ClawControl   string `json:"claw_control"`
 }
 
-func loadEscrowVectors(t *testing.T) map[string]escrowVec {
+func loadHTLCVectors(t *testing.T) map[string]htlcVec {
 	t.Helper()
-	b, err := os.ReadFile("testdata/escrow_vectors.json")
+	b, err := os.ReadFile("testdata/htlc_vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var v map[string]escrowVec
+	var v map[string]htlcVec
 	if err := json.Unmarshal(b, &v); err != nil {
 		t.Fatal(err)
 	}
 	return v
 }
 
-func checkTree(t *testing.T, name string, tree *TapTree, v escrowVec, leaves map[string][2]string) {
+func checkTree(t *testing.T, name string, tree *TapTree, v htlcVec, leaves map[string][2]string) {
 	t.Helper()
 	if got := hex.EncodeToString(tree.ScriptPubKey()); got != v.Spk {
 		t.Errorf("%s spk = %s want %s", name, got, v.Spk)
@@ -62,13 +62,13 @@ func checkTree(t *testing.T, name string, tree *TapTree, v escrowVec, leaves map
 	}
 }
 
-// The escrow and the pot match the test framework's construction byte for
+// The HTLC and the pot match the test framework's construction byte for
 // byte, three leaves included.
-func TestSwapEscrowVectors(t *testing.T) {
-	vs := loadEscrowVectors(t)
-	for _, name := range []string{"escrow_claw", "escrow_noclaw"} {
+func TestSwapHTLCVectors(t *testing.T) {
+	vs := loadHTLCVectors(t)
+	for _, name := range []string{"htlc_claw", "htlc_noclaw"} {
 		v := vs[name]
-		terms := SwapEscrowTerms{
+		terms := SwapHTLCTerms{
 			Hash: hb32(t, v.Hash), BuyerX: hb32(t, v.BuyerX), PolicyX: hb32(t, v.PolicyX),
 			TSeq: v.TSeq, SellerProgram: hb32(t, v.SellerProgram), Asset: hb32(t, v.Asset), Value: v.Value,
 		}
@@ -78,7 +78,7 @@ func TestSwapEscrowVectors(t *testing.T) {
 			terms.IssuerX = &x
 			leaves["claw"] = [2]string{v.ClawScript, v.ClawControl}
 		}
-		tree, err := SwapEscrowTree(terms)
+		tree, err := SwapHTLCTree(terms)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,20 +99,20 @@ func TestSwapEscrowVectors(t *testing.T) {
 }
 
 // Every lock is a time: a height, zero atoms or a bad payout is refused.
-func TestSwapEscrowRefusals(t *testing.T) {
-	base := SwapEscrowTerms{TSeq: MinTimeLock, Value: 1}
-	if _, err := SwapEscrowTree(base); err != nil {
+func TestSwapHTLCRefusals(t *testing.T) {
+	base := SwapHTLCTerms{TSeq: MinTimeLock, Value: 1}
+	if _, err := SwapHTLCTree(base); err != nil {
 		t.Fatalf("a time lock and one atom are fine: %v", err)
 	}
 	h := base
 	h.TSeq = MinTimeLock - 1
-	if _, err := SwapEscrowTree(h); err == nil {
+	if _, err := SwapHTLCTree(h); err == nil {
 		t.Fatal("a height T_seq was accepted")
 	}
 	z := base
 	z.Value = 0
-	if _, err := SwapEscrowTree(z); err == nil {
-		t.Fatal("an empty escrow was accepted")
+	if _, err := SwapHTLCTree(z); err == nil {
+		t.Fatal("an empty HTLC was accepted")
 	}
 	pot := FeePotTerms{TSeq: MinTimeLock, SellerVersion: 0, SellerProgram: make([]byte, 20), Value: 1}
 	if _, err := FeePotTree(pot); err != nil {

@@ -35,8 +35,8 @@ func (s *Server) checkTransferAdmitting(tx *elements.Tx, asset *store.Asset, sen
 	return s.checkTransferExcept(tx, asset, sender, atomsOut, admitted, "")
 }
 
-// checkTransferExcept is checkTransferAdmitting for a re-claim of the escrow
-// reclaim (its script, hex): that escrow's earlier claim record is the same
+// checkTransferExcept is checkTransferAdmitting for a re-claim of the HTLC
+// reclaim (its script, hex): that HTLC's earlier claim record is the same
 // movement, so it is not counted again (see checkRulesExcept).
 func (s *Server) checkTransferExcept(tx *elements.Tx, asset *store.Asset, sender *store.User, atomsOut map[string]uint64,
 	admitted map[string]*store.User, reclaim string) error {
@@ -111,8 +111,8 @@ func (s *Server) checkRules(asset *store.Asset, sender *store.User, recipients m
 	return s.checkRulesExcept(asset, sender, recipients, burned, height, "")
 }
 
-// checkRulesExcept is checkRules for a re-claim of the escrow whose script is
-// reclaim (hex, or "" for none). A re-claim replaces that escrow's earlier
+// checkRulesExcept is checkRules for a re-claim of the HTLC whose script is
+// reclaim (hex, or "" for none). A re-claim replaces that HTLC's earlier
 // claim record, which may never be mined, so velocity does not count it.
 func (s *Server) checkRulesExcept(asset *store.Asset, sender *store.User, recipients map[string]uint64, burned uint64, height int64, reclaim string) error {
 	// Pledged collateral (Pignus Tier C). A restricted asset cannot be locked
@@ -240,7 +240,7 @@ func (s *Server) checkRulesExcept(asset *store.Asset, sender *store.User, recipi
 				if rec.Asset != asset.ID || rec.SenderAID != sender.AID {
 					continue
 				}
-				if reclaim != "" && rec.Kind == "escrow-claim" && rec.ID == reclaim {
+				if reclaim != "" && rec.Kind == "htlc-claim" && rec.ID == reclaim {
 					continue
 				}
 				if velocityCounts(rec, height, rules.VelocityWindowBlocks, now) {
@@ -420,9 +420,9 @@ func (s *Server) holderBalances(asset *store.Asset) (map[string]uint64, error) {
 			}
 			add(hex.EncodeToString(tree.ScriptPubKey()), u.AID)
 		}
-		// A coin in a swap escrow is its seller's until claimed, and every rule
+		// A coin in a swap HTLC is its seller's until claimed, and every rule
 		// reading a balance must see it there.
-		for spk, e := range st.Escrows {
+		for spk, e := range st.HTLCs {
 			if e.Asset == asset.ID {
 				add(spk, e.SellerAID)
 			}
@@ -1158,18 +1158,18 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		// TreeOutputs names outputs that are boards of the asset's tree, each
 		// with its board record (tree.go): admitted as their holder's.
 		TreeOutputs []treeOutput `json:"tree_outputs,omitempty"`
-		// EscrowOutputs names swap escrows the sender locks its coin in
-		// (escrow.go): admitted as the sender's own. EscrowInputs names the one
-		// escrow a claim spends; sender_aid is then the escrow's seller.
-		EscrowOutputs []escrowOutput `json:"escrow_outputs,omitempty"`
-		EscrowInputs  []escrowInput  `json:"escrow_inputs,omitempty"`
+		// HTLCOutputs names swap HTLCs the sender locks its coin in
+		// (htlc.go): admitted as the sender's own. HTLCInputs names the one
+		// HTLC a claim spends; sender_aid is then the HTLC's seller.
+		HTLCOutputs []htlcOutput `json:"htlc_outputs,omitempty"`
+		HTLCInputs  []htlcInput  `json:"htlc_inputs,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
 		return
 	}
-	if len(req.EscrowInputs) > 0 && (len(req.Inputs) > 0 || len(req.EscrowOutputs) > 0 || len(req.TreeOutputs) > 0) {
-		httpErr(w, 400, "a claim spends one escrow and nothing else: no inputs, escrow_outputs or tree_outputs beside escrow_inputs")
+	if len(req.HTLCInputs) > 0 && (len(req.Inputs) > 0 || len(req.HTLCOutputs) > 0 || len(req.TreeOutputs) > 0) {
+		httpErr(w, 400, "a claim spends one HTLC and nothing else: no inputs, htlc_outputs or tree_outputs beside htlc_inputs")
 		return
 	}
 	senderTree, sender, asset, err := s.enclaveFor(req.SenderAID, req.Asset)
@@ -1270,10 +1270,10 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var escrows []*store.Escrow
-	if len(req.EscrowOutputs) > 0 {
+	var htlcs []*store.HTLC
+	if len(req.HTLCOutputs) > 0 {
 		var escAdmitted map[string]*store.User
-		escAdmitted, escrows, err = s.admitEscrowOutputs(tx, asset, sender, req.EscrowOutputs)
+		escAdmitted, htlcs, err = s.admitHTLCOutputs(tx, asset, sender, req.HTLCOutputs)
 		if err != nil {
 			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
 				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
@@ -1290,8 +1290,8 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			admitted[spk] = u
 		}
 	}
-	if len(req.EscrowInputs) > 0 {
-		s.handleEscrowClaim(w, tx, spent, asset, sender, req.EscrowInputs)
+	if len(req.HTLCInputs) > 0 {
+		s.handleHTLCClaim(w, tx, spent, asset, sender, req.HTLCInputs)
 		return
 	}
 	atomsOut := map[string]uint64{}
@@ -1346,19 +1346,19 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	s.st.AppendLog("cosign", map[string]any{"txid": rawTxid, "sender": sender.AID, "asset": asset.ID, "atoms": sent})
-	if len(escrows) > 0 {
+	if len(htlcs) > 0 {
 		if err := s.st.Update(func(st *store.State) error {
-			for _, e := range escrows {
+			for _, e := range htlcs {
 				e.LockTxid = rawTxid
-				st.Escrows[e.SPK] = e
+				st.HTLCs[e.SPK] = e
 			}
 			return nil
 		}); err != nil {
-			httpErr(w, 500, "record the escrows: %v", err)
+			httpErr(w, 500, "record the HTLCs: %v", err)
 			return
 		}
-		for _, e := range escrows {
-			s.st.AppendLog("escrow-lock", map[string]any{"txid": rawTxid, "vout": e.Vout, "seller": e.SellerAID,
+		for _, e := range htlcs {
+			s.st.AppendLog("htlc-lock", map[string]any{"txid": rawTxid, "vout": e.Vout, "seller": e.SellerAID,
 				"buyer": e.BuyerAID, "asset": asset.ID, "atoms": e.Value, "hash": e.Hash, "t_seq": e.TSeq})
 		}
 	}

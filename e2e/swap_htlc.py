@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""The swap escrow through a real openampd against a real node.
+"""The swap HTLC through a real openampd against a real node.
 
     SEQUENTIA_REPO=~/Sequentia OPENAMPD=./openampd/openampd \\
     TOKEN_COVENANTS=<sequentia-contracts>/tools/token-covenants/target/release/token-covenants \\
-    python3 e2e/swap_escrow.py
+    python3 e2e/swap_htlc.py
 
 The Sequentia side of a restricted asset sold for on-chain BTC. A Sequentia
 node on a custom chain with -par=1, so a block refused for a script names the
@@ -11,7 +11,7 @@ script's error; every negative case below is forced into a block with
 generateblock, not only refused by the mempool. Time is driven with the node's
 mock time, and openampd reads it as the chain's median time past.
 
-The seller locks three escrows of one restricted asset (E1, E2, E3, each for
+The seller locks three HTLCs of one restricted asset (E1, E2, E3, each for
 the same buyer behind its own secret) and two fee pots, in one transaction
 openampd co-signs as the seller's own move. Then:
 
@@ -31,8 +31,8 @@ openampd co-signs as the seller's own move. Then:
      the coin the seller kept; then openampd is STOPPED;
   7. after T_seq, with no server and no key, the refunds refuse in blocks to go
      anywhere but home: another holder's enclave, one atom short, home at
-     another output's index, a refund that is not input 0, two escrows in one
-     transaction, and an escrow and a pot in one transaction;
+     another output's index, a refund that is not input 0, two HTLCs in one
+     transaction, and an HTLC and a pot in one transaction;
   8. the collision matrix: no output of a refund can also count for another
      covenant in the same transaction. The seller rests a SeqDEX bid for the
      asset, paying its enclave, and a SeqDEX ask paid to its payout address
@@ -78,7 +78,7 @@ ISSUER_TOKEN = "e2e-issuer-token"
 NUMS = bytes.fromhex("50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
 FEE = 5000
 POT = 20000
-ESCROW = 300
+HTLC_ATOMS = 300
 NONFINAL = 0xfffffffe
 HOUR = 3600
 
@@ -93,7 +93,7 @@ def home(version, program, asset, value):
             OP_INSPECTOUTPUTVALUE, OP_1, OP_EQUALVERIFY, struct.pack("<Q", value), OP_EQUAL]
 
 
-def escrow_tap(h, buyer_x, policy_x, issuer_x, t_seq, seller_prog, asset, value):
+def htlc_tap(h, buyer_x, policy_x, issuer_x, t_seq, seller_prog, asset, value):
     leaves = [("claim", CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY,
                                  buyer_x, OP_CHECKSIGVERIFY, policy_x, OP_CHECKSIG])),
               ("refund", CScript([t_seq, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + home(1, seller_prog, asset, value)))]
@@ -147,7 +147,7 @@ def sized(tx):
     return tx
 
 
-class SwapEscrowE2E(BitcoinTestFramework):
+class SwapHTLCE2E(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 1
@@ -318,7 +318,7 @@ class SwapEscrowE2E(BitcoinTestFramework):
         rates[x] = 100000000
         self.node.setfeeexchangerates(rates)
 
-        tmp = tempfile.mkdtemp(prefix="swap-escrow-e2e-", dir=self.options.tmpdir)
+        tmp = tempfile.mkdtemp(prefix="swap-htlc-e2e-", dir=self.options.tmpdir)
         p = subprocess.run([TOOL, "key", "--new", "--key-file", os.path.join(tmp, "cold.key")], capture_output=True)
         assert p.returncode == 0, p.stderr
         cold = json.loads(p.stdout)["key"]
@@ -381,19 +381,19 @@ class SwapEscrowE2E(BitcoinTestFramework):
         H = {e: sha256(s) for e, s in secrets.items()}
         t_seq = self.now + 3 * HOUR
         cutoff = t_seq - HOUR
-        taps = {e: escrow_tap(H[e], x["buyer"], policy_x, issuer_x, t_seq, seller_prog, self.A, ESCROW) for e in H}
+        taps = {e: htlc_tap(H[e], x["buyer"], policy_x, issuer_x, t_seq, seller_prog, self.A, HTLC_ATOMS) for e in H}
         assert payout[0] == 0 and payout[1] == 20, "a P2WPKH payout"
         pots = {e: pot_tap(H[e], x["buyer"], t_seq, 0, payout[2:], self.BTC, POT) for e in ("E1", "E3")}
 
         # -- the lock -----------------------------------------------------------
-        self.log.info("lock: three escrows and two pots, co-signed as the seller's own move")
-        outs = [self.asset_out(taps[e].scriptPubKey, ESCROW) for e in ("E1", "E2", "E3")]
-        outs.append(self.asset_out(enclave["seller"], 1000 - 3 * ESCROW))
+        self.log.info("lock: three HTLCs and two pots, co-signed as the seller's own move")
+        outs = [self.asset_out(taps[e].scriptPubKey, HTLC_ATOMS) for e in ("E1", "E2", "E3")]
+        outs.append(self.asset_out(enclave["seller"], 1000 - 3 * HTLC_ATOMS))
         outs += [self.btc_out(pots[e].scriptPubKey, POT) for e in ("E1", "E3")]
         lock, spent = self.with_fee([seller_coin], outs)
         _, cs = self.api("POST", "/v1/cosign", {
             "tx": lock.serialize().hex(), "asset": asset, "sender_aid": aids["seller"], "inputs": [0],
-            "escrow_outputs": [{"output": i, "buyer_aid": aids["buyer"], "hash": H[e].hex(), "t_seq": t_seq}
+            "htlc_outputs": [{"output": i, "buyer_aid": aids["buyer"], "hash": H[e].hex(), "t_seq": t_seq}
                                for i, e in enumerate(("E1", "E2", "E3"))],
         })
         entry = cs["sigs"][0]
@@ -406,11 +406,11 @@ class SwapEscrowE2E(BitcoinTestFramework):
         lockt = tx_from_hex(node.getrawtransaction(lock_txid))
         E = {e: self.coin_at(lock_txid, i) for i, e in enumerate(("E1", "E2", "E3"))}
         P = {"E1": self.coin_at(lock_txid, 4), "E3": self.coin_at(lock_txid, 5)}
-        # 1. the server's escrow is the one built here from the terms alone.
+        # 1. the server's HTLC is the one built here from the terms alone.
         for i, e in enumerate(("E1", "E2", "E3")):
             assert bytes(lockt.vout[i].scriptPubKey) == bytes(taps[e].scriptPubKey), e
         self.rec("lock", {"txid": lock_txid, "t_seq": t_seq, "cutoff": cutoff,
-                          "escrow_spk": bytes(taps["E1"].scriptPubKey).hex(),
+                          "htlc_spk": bytes(taps["E1"].scriptPubKey).hex(),
                           "leaf_bytes": {n: len(taps["E1"].leaves[n].script) for n in ("claim", "refund", "claw")},
                           "lock_vsize": node.getrawtransaction(lock_txid, True)["vsize"]})
 
@@ -432,20 +432,20 @@ class SwapEscrowE2E(BitcoinTestFramework):
         self.rec("seller_resting_orders", {"bid_for_the_asset": "%064x" % BID[0].hash, "ask_X_for_the_fee_asset": "%064x" % ASK[0].hash})
 
         def claim_tx(e, pot=True, secret=None, policy=True, buyer_pot_sig=True, to=None):
-            """The buyer's claim of escrow e, with its pot paying the fee."""
+            """The buyer's claim of HTLC e, with its pot paying the fee."""
             ins = [E[e]] + ([P[e]] if pot else [])
             tx = CTransaction()
             tx.nVersion = 2
             for op, _ in ins:
                 tx.vin.append(CTxIn(op, nSequence=NONFINAL))
-            tx.vout = [self.asset_out(to or enclave["buyer"], ESCROW)]
+            tx.vout = [self.asset_out(to or enclave["buyer"], HTLC_ATOMS)]
             if pot:
                 tx.vout.append(self.btc_out(self.spk(), POT - FEE))
                 tx.vout.append(CTxOut(CTxOutValue(FEE), b"", CTxOutAsset(b"\x01" + self.BTC)))
             sized(tx)
             spent = [t for _, t in ins]
             st, body = self.api("POST", "/v1/cosign", {"tx": tx.serialize().hex(), "asset": asset,
-                                                       "sender_aid": aids["seller"], "escrow_inputs": [{"input": 0}]},
+                                                       "sender_aid": aids["seller"], "htlc_inputs": [{"input": 0}]},
                                 expect=None)
             return tx, spent, st, body
 
@@ -499,7 +499,7 @@ class SwapEscrowE2E(BitcoinTestFramework):
         assert node.getrawtransaction(c3_txid, True)["confirmations"] >= 1
         assert secrets["E3"].hex() in node.getrawtransaction(c3_txid), "the secret is in the claim's witness"
         self.rec("claim_before_cutoff", {"mtp": mtp, "cutoff": cutoff, "txid": c3_txid,
-                                         "buyer_gets": "%d atoms of the asset, and the pot less the fee: %d" % (ESCROW, POT - FEE),
+                                         "buyer_gets": "%d atoms of the asset, and the pot less the fee: %d" % (HTLC_ATOMS, POT - FEE),
                                          "secret_revealed_on_chain": True,
                                          "vsize": node.getrawtransaction(c3_txid, True)["vsize"]})
 
@@ -507,7 +507,7 @@ class SwapEscrowE2E(BitcoinTestFramework):
         mtp = self.jump_to(cutoff + 300)
         st, body = claim_tx("E2", pot=False)[2:]
         assert st == 403 and "cut-off" in body["error"], body
-        early, sp = self.with_fee([E["E1"]], [self.asset_out(enclave["seller"], ESCROW)], locktime=t_seq)
+        early, sp = self.with_fee([E["E1"]], [self.asset_out(enclave["seller"], HTLC_ATOMS)], locktime=t_seq)
         early.wit.vtxinwit[0].scriptWitness.stack = [bytes(taps["E1"].leaves["refund"].script), control(taps["E1"], "refund")]
         self.refuse("refund before T_seq", early, "non-final")
         self.rec("after_cutoff", {"mtp": mtp, "cosign": body,
@@ -556,10 +556,10 @@ class SwapEscrowE2E(BitcoinTestFramework):
                     tx.wit.vtxinwit[i].scriptWitness.stack = w
             return tx
 
-        home = self.asset_out(enclave["seller"], ESCROW)
-        self.refuse("refund to another holder's enclave", refund([E["E1"]], [self.asset_out(enclave["other"], ESCROW)]),
+        home = self.asset_out(enclave["seller"], HTLC_ATOMS)
+        self.refuse("refund to another holder's enclave", refund([E["E1"]], [self.asset_out(enclave["other"], HTLC_ATOMS)]),
                     "Script failed an OP_EQUALVERIFY operation")
-        self.refuse("refund one atom short", refund([E["E1"]], [self.asset_out(enclave["seller"], ESCROW - 1),
+        self.refuse("refund one atom short", refund([E["E1"]], [self.asset_out(enclave["seller"], HTLC_ATOMS - 1),
                                                                 self.asset_out(enclave["other"], 1)]),
                     "Script evaluated without error but finished with a false/empty top stack element")
         self.refuse("refund home at another output's index", refund([E["E1"]], [CTxOut(CTxOutValue(0), CScript([OP_RETURN]), CTxOutAsset(b"\x01" + self.BTC)), home]),
@@ -581,27 +581,27 @@ class SwapEscrowE2E(BitcoinTestFramework):
             self.refuse(label, tx, reason)
             matrix.append({"case": label, "refused": reason})
         # Two refunds of one kind or of two kinds: only one input can be input 0.
-        collide("two escrow refunds in one transaction (E1 at 0, E2 at 1, each home)",
+        collide("two HTLC refunds in one transaction (E1 at 0, E2 at 1, each home)",
                 refund([E["E1"], E["E2"]], [home, home]), "Script failed an OP_EQUALVERIFY operation")
-        collide("an escrow refund and a pot refund in one transaction (E1 at 0, its pot at 1)",
+        collide("an HTLC refund and a pot refund in one transaction (E1 at 0, its pot at 1)",
                 refund([E["E1"], P["E1"]], [home, self.btc_out(payout, POT)]), "Script failed an OP_EQUALVERIFY operation")
-        collide("a pot refund and an escrow refund in one transaction (the pot at 0, E1 at 1)",
+        collide("a pot refund and an HTLC refund in one transaction (the pot at 0, E1 at 1)",
                 refund([P["E1"], E["E1"]], [self.btc_out(payout, POT), home]), "Script failed an OP_EQUALVERIFY operation")
         # PV4's X1: the seller's bid at input 1 pays the seller at output 2; the
-        # escrow at input 2 sends its coin home at output 2. The taker would take
+        # HTLC at input 2 sends its coin home at output 2. The taker would take
         # 300,000 of the bid's fee asset for nothing.
-        filled = ESCROW * 1000
+        filled = HTLC_ATOMS * 1000
         c = self.fee_coin()
         taker = self.spk()
         x1_outs = [self.btc_out(taker, c[1].nValue.getAmount() - FEE + filled), fee_out, home,
                    self.btc_out(bid_tap.scriptPubKey, 1000000 - filled)]
-        collide("X1: an escrow refund at input 2 as the payment of the seller's bid at input 1 (output 2)",
+        collide("X1: an HTLC refund at input 2 as the payment of the seller's bid at input 1 (output 2)",
                 spend([(c, None), (BID, [bid_leaf, control(bid_tap, "fill")]), (E["E1"], refund_wit(E["E1"][0]))], x1_outs),
                 "Script failed an OP_EQUALVERIFY operation")
-        # The same, with the escrow where its refund is valid (input 0): the bid
+        # The same, with the HTLC where its refund is valid (input 0): the bid
         # at input 1 can only count output 2, which no longer carries the asset.
         c = self.fee_coin()
-        collide("an escrow refund at input 0 (output 0) beside the seller's bid at input 1, which wants output 2",
+        collide("an HTLC refund at input 0 (output 0) beside the seller's bid at input 1, which wants output 2",
                 spend([(E["E1"], refund_wit(E["E1"][0])), (BID, [bid_leaf, control(bid_tap, "fill")]), (c, None)],
                       [home, fee_out, self.btc_out(taker, c[1].nValue.getAmount() - FEE + filled),
                        self.btc_out(bid_tap.scriptPubKey, 1000000 - filled)]),
@@ -630,9 +630,9 @@ class SwapEscrowE2E(BitcoinTestFramework):
             rt = tx_from_hex(node.getrawtransaction(txid))
             assert bytes(rt.vout[0].scriptPubKey) == bytes(out.scriptPubKey)
         self.rec("refund", {"mtp": mtp, "t_seq": t_seq, "transactions": refunds,
-                            "leaf_bytes": {"escrow_refund": len(taps["E1"].leaves["refund"].script),
+                            "leaf_bytes": {"htlc_refund": len(taps["E1"].leaves["refund"].script),
                                            "pot_refund": len(pots["E1"].leaves["refund"].script)},
-                            "seller_gets": "both escrows back in its enclave, still frozen there, and the pot"})
+                            "seller_gets": "both HTLCs back in its enclave, still frozen there, and the pot"})
         # The coin is home in the seller's enclave, whose every move needs the
         # policy key: the freeze still binds it.
 
@@ -646,7 +646,7 @@ class SwapEscrowE2E(BitcoinTestFramework):
 
 
 if __name__ == "__main__":
-    tmp = tempfile.mkdtemp(prefix="swap-escrow-e2e-cfg-")
+    tmp = tempfile.mkdtemp(prefix="swap-htlc-e2e-cfg-")
     cfg = os.path.join(tmp, "config.ini")
     with open(cfg, "w") as f:
         f.write("[environment]\nPACKAGE_NAME=Sequentia Core\nPACKAGE_BUGREPORT=\nSRCDIR={r}\nBUILDDIR={r}\nEXEEXT=\n"
@@ -655,4 +655,4 @@ if __name__ == "__main__":
     os.environ.setdefault("BITCOIND", os.path.join(REPO, "src", "sequentiad"))
     os.environ.setdefault("BITCOINCLI", os.path.join(REPO, "src", "sequentia-cli"))
     sys.argv[1:1] = ["--configfile=" + cfg]
-    SwapEscrowE2E().main()
+    SwapHTLCE2E().main()

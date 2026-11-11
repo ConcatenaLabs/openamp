@@ -5,16 +5,16 @@ import (
 	"fmt"
 )
 
-// The swap escrow and its fee pot: the Sequentia side of a restricted asset
+// The swap HTLC and its fee pot: the Sequentia side of a restricted asset
 // traded for on-chain BTC. The BTC payer (the buyer) holds a secret s with
-// H = SHA256(s). The seller locks the asset in the escrow and a little of an
+// H = SHA256(s). The seller locks the asset in the HTLC and a little of an
 // accepted fee asset in the pot, in one transaction. The buyer claims both
 // together with s, which the pot's witness reveals in plain tapscript. After
 // T_seq, a time, anyone can send each back where it came from: there is no key
 // on the way home, so no refusal and no absence can keep a coin from its
 // owner, and the buyer cannot outwait the refund with a withheld claim.
 //
-// Escrow, P2TR(NUMS, [claim, [refund, claw]]) or P2TR(NUMS, [claim, refund]):
+// HTLC, P2TR(NUMS, [claim, [refund, claw]]) or P2TR(NUMS, [claim, refund]):
 //
 //	claim : OP_SIZE 32 OP_EQUALVERIFY OP_SHA256 <H> OP_EQUALVERIFY
 //	        <K_buyer> OP_CHECKSIGVERIFY <K_policy> OP_CHECKSIG
@@ -72,8 +72,8 @@ const (
 	MinTimeLock = 500_000_000
 )
 
-// SwapEscrowTerms are everything the escrow's scripts commit to.
-type SwapEscrowTerms struct {
+// SwapHTLCTerms are everything the HTLC's scripts commit to.
+type SwapHTLCTerms struct {
 	Hash          [32]byte  // H = SHA256(s)
 	BuyerX        [32]byte  // the buyer's enclave key
 	PolicyX       [32]byte  // the asset's policy key
@@ -81,7 +81,7 @@ type SwapEscrowTerms struct {
 	TSeq          uint32    // the refund opens at this median time past (>= MinTimeLock)
 	SellerProgram [32]byte  // the seller's enclave: its v1 witness program
 	Asset         [32]byte  // the restricted asset, internal byte order
-	Value         uint64    // the escrowed atoms, all of which go home on a refund
+	Value         uint64    // the locked atoms, all of which go home on a refund
 }
 
 // FeePotTerms are everything the fee pot's scripts commit to.
@@ -95,19 +95,19 @@ type FeePotTerms struct {
 	Value         uint64
 }
 
-func (t *SwapEscrowTerms) check() error {
+func (t *SwapHTLCTerms) check() error {
 	if t.TSeq < MinTimeLock {
 		return fmt.Errorf("T_seq %d is a height: every swap lock is a time (>= %d)", t.TSeq, MinTimeLock)
 	}
 	if t.Value == 0 {
-		return fmt.Errorf("an escrow of zero atoms")
+		return fmt.Errorf("an HTLC of zero atoms")
 	}
 	return nil
 }
 
-// SwapEscrowTree builds the escrow: leaves "claim", "refund" and, with
+// SwapHTLCTree builds the HTLC: leaves "claim", "refund" and, with
 // clawback, "claw".
-func SwapEscrowTree(t SwapEscrowTerms) (*TapTree, error) {
+func SwapHTLCTree(t SwapHTLCTerms) (*TapTree, error) {
 	if err := t.check(); err != nil {
 		return nil, err
 	}
