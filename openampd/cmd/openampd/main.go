@@ -8,6 +8,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ func main() {
 		tokenTool   = flag.String("tokentool", os.Getenv("OPENAMPD_TOKEN_TOOL"), "path to sequentia-contracts' token-covenants tool, which builds the supply cap every reissuance token is held in; unset, nothing can be issued or minted")
 		capColdKey  = flag.String("capcoldkey", os.Getenv("OPENAMPD_CAP_COLD_KEY"), "default cold key (x-only hex) of a new supply cap: the key, kept off this server, that can replace its operator key")
 		capOpKey    = flag.String("capoperatorkey", "", "this server's supply-cap operator key file (default <datadir>/cap-operator.key, made on first start)")
+		onboarding  = flag.String("onboarding", os.Getenv("OPENAMPD_ONBOARDING"), "\"name|url\" of the page where a holder this server's issuers have not approved asks for approval, for an asset that names none of its own")
 		arcaEnclave = flag.String("arcaenclave", os.Getenv("OPENAMPD_ARCA_ENCLAVE"), "path to arca-enclave (built from the arca repository: cargo install --path covenant --bin arca-enclave), which reads the boards and transfers of an asset's tree; unset, no asset has a tree here")
 	)
 	flag.Parse()
@@ -90,7 +92,7 @@ func main() {
 		FeeAsset: *feeAsset, FeeSats: *feeSats, DemoIssuer: *demoIssuer,
 		ElectrsURL: *electrsURL, Signer: *signerName, DampRegistry: *dampReg,
 		TokenTool: *tokenTool, CapOperatorKeyFile: *capOpKey, CapColdKey: *capColdKey,
-		ArcaEnclave: *arcaEnclave,
+		ArcaEnclave: *arcaEnclave, Onboarding: parseOnboarding(*onboarding),
 	}, st, node, wallet)
 	if err != nil {
 		log.Fatal(err)
@@ -145,4 +147,21 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseOnboarding reads -onboarding "name|url"; a bad value stops the daemon
+// rather than serve a dead link.
+func parseOnboarding(v string) *store.Onboarding {
+	if v == "" {
+		return nil
+	}
+	name, u, ok := strings.Cut(v, "|")
+	if !ok {
+		name, u = "", v
+	}
+	pu, err := url.Parse(u)
+	if err != nil || (pu.Scheme != "https" && pu.Scheme != "http") || pu.Host == "" {
+		log.Fatalf("-onboarding: %q is not \"name|http(s) url\"", v)
+	}
+	return &store.Onboarding{Name: name, URL: u}
 }

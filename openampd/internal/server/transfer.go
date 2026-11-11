@@ -1127,7 +1127,19 @@ func (s *Server) cosignAndBroadcast(p *pendingTransfer, sender *store.User, user
 
 // --- raw co-sign (self-built transactions, fee self-paid) ---------------------
 
-func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) { s.cosign(w, r, false) }
+
+// handleCheck is POST /v1/cosign's dry run: the same body, every check, and
+// nothing signed, recorded or logged. A trade checks with it before any party
+// signs, so a refusal costs nobody a signature.
+func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) { s.cosign(w, r, true) }
+
+func (s *Server) cosign(w http.ResponseWriter, r *http.Request, dry bool) {
+	logRefusal := func(action string, st *store.Store, d map[string]any) {
+		if !dry {
+			logRefusal(action, st, d)
+		}
+	}
 	var req struct {
 		Tx        string `json:"tx"`
 		Asset     string `json:"asset"`
@@ -1141,9 +1153,22 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		// escrow a claim spends; sender_aid is then the escrow's seller.
 		EscrowOutputs []escrowOutput `json:"escrow_outputs,omitempty"`
 		EscrowInputs  []escrowInput  `json:"escrow_inputs,omitempty"`
+		// Broadcast asks this server to complete and broadcast the transaction
+		// itself, so its signature never exists apart from a broadcast. The
+		// caller supplies the sender's signature on each claimed input
+		// (UserSigs) and the sender's signed expiry, which this server enforces:
+		// a trade the sender signed cannot be used after the time it chose.
+		Broadcast bool              `json:"broadcast,omitempty"`
+		UserSigs  map[string]string `json:"user_sigs,omitempty"`
+		ExpiresAt int64             `json:"expires_at,omitempty"`
+		ExpirySig string            `json:"expiry_sig,omitempty"`
 	}
 	if err := decodeBody(r, &req); err != nil {
 		httpErr(w, 400, "%v", err)
+		return
+	}
+	if len(req.EscrowInputs) > 0 && req.Broadcast {
+		httpErr(w, 400, "a claim is broadcast by its buyer, who adds the secret: broadcast is refused for escrow_inputs")
 		return
 	}
 	if len(req.EscrowInputs) > 0 && (len(req.Inputs) > 0 || len(req.EscrowOutputs) > 0 || len(req.TreeOutputs) > 0) {
@@ -1269,7 +1294,7 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(req.EscrowInputs) > 0 {
-		s.handleEscrowClaim(w, tx, spent, asset, sender, req.EscrowInputs)
+		s.handleEscrowClaim(w, tx, spent, asset, sender, req.EscrowInputs, dry)
 		return
 	}
 	atomsOut := map[string]uint64{}
@@ -1282,6 +1307,25 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 502, "%v", err)
 		return
 	}
+	var sentAtoms uint64
+	for _, a := range atomsOut {
+		sentAtoms += a
+	}
+	if dry {
+		httpJSON(w, map[string]any{"ok": true, "atoms": sentAtoms})
+		return
+	}
+	if req.Broadcast {
+		if err := s.checkExpiry(tx, sender, req.ExpiresAt, req.ExpirySig); err != nil {
+			if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
+				logRefusal("cosign", s.st, map[string]any{"sender": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+				httpErr(w, 403, "%v", pr)
+				return
+			}
+			httpErr(w, 400, "%v", err)
+			return
+		}
+	}
 	leaf := senderTree.Leaves["transfer"].Script
 	control, _ := senderTree.ControlBlock("transfer")
 	type sigOut struct {
@@ -1292,6 +1336,7 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 		Control   string `json:"control"`
 	}
 	var sigs []sigOut
+	policySigs := map[int][]byte{}
 	var sent uint64
 	for _, a := range atomsOut {
 		sent += a
@@ -1310,12 +1355,21 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, 500, "%v", err)
 			return
 		}
+		policySigs[idx] = sig
 		sigs = append(sigs, sigOut{
 			Input: idx, Sighash: hex.EncodeToString(sh[:]), PolicySig: hex.EncodeToString(sig),
 			Leaf: hex.EncodeToString(leaf), Control: hex.EncodeToString(control),
 		})
 	}
 	rawTxid := cosignTxid
+	if req.Broadcast {
+		txid, err := s.completeAndBroadcast(tx, spent, sender, policySigs, req.UserSigs, leaf, control)
+		if err != nil {
+			httpErr(w, 409, "%v", err)
+			return
+		}
+		rawTxid = txid
+	}
 	s.st.Update(func(st *store.State) error {
 		st.Transfers = append(st.Transfers, store.TransferRecord{
 			Txid: rawTxid, Asset: asset.ID, SenderAID: sender.AID, Atoms: sent, Height: -1,
@@ -1341,6 +1395,10 @@ func (s *Server) handleCosign(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.registerBoards(boards); err != nil {
 		httpErr(w, 500, "register the boards: %v", err)
+		return
+	}
+	if req.Broadcast {
+		httpJSON(w, map[string]any{"txid": rawTxid})
 		return
 	}
 	httpJSON(w, map[string]any{"sigs": sigs})

@@ -250,18 +250,24 @@ func (s *Server) escrowClaim(tx *elements.Tx, spent []*elements.SpentOutput, ass
 // policy signature, never a broadcast, because the buyer adds the secret. A
 // later request for the same escrow (a higher fee, after a stuck claim)
 // replaces the earlier one's velocity record rather than adding a second.
-func (s *Server) handleEscrowClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []escrowInput) {
+func (s *Server) handleEscrowClaim(w http.ResponseWriter, tx *elements.Tx, spent []*elements.SpentOutput, asset *store.Asset, sender *store.User, ins []escrowInput, dry bool) {
 	rec, tree, idx, err := s.escrowClaim(tx, spent, asset, sender, ins)
 	if err == nil {
 		err = s.checkTransfer(tx, asset, sender, map[string]uint64{})
 	}
 	if err != nil {
 		if pr, isRefusal := err.(*PolicyRefusal); isRefusal {
-			logRefusal("escrow-claim", s.st, map[string]any{"seller": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+			if !dry {
+				logRefusal("escrow-claim", s.st, map[string]any{"seller": sender.AID, "asset": asset.ID, "reason": pr.Reason})
+			}
 			httpErr(w, 403, "%v", pr)
 			return
 		}
 		httpErr(w, 502, "%v", err)
+		return
+	}
+	if dry {
+		httpJSON(w, map[string]any{"ok": true, "atoms": rec.Value, "cutoff": time.Unix(int64(rec.TSeq), 0).Add(-claimCutoff).Unix()})
 		return
 	}
 	leaf := tree.Leaves["claim"].Script

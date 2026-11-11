@@ -46,6 +46,7 @@ Base URL of the public testnet instance: `https://sequentiatestnet.com/openamp` 
 | `POST /v1/transfers` | Build a hosted transfer (fee conversion or sponsorship) |
 | `POST /v1/transfers/{id}/complete` | Submit the holder's signatures, co-sign and broadcast |
 | `POST /v1/cosign` | Co-sign a self-built transaction (fee self-paid), including a board into an asset's tree |
+| `POST /v1/check` | The same request as `/v1/cosign`, judged by every check, with nothing signed, recorded or logged: `{"ok": true, "atoms"}` or the refusal |
 | `POST /v1/tree/leaves/{salt}/exited` | Close a tree leaf its holder took home to its enclave (anyone may report; the chain is the proof) |
 | `GET /v1/assets` | All assets with their contracts |
 | `GET /v1/assets/{id}` | One asset |
@@ -87,7 +88,7 @@ A refusal is an answer, not an error (200):
  "onboarding": {"name": "Bond Issuer Ltd", "url": "https://bonds.example/apply"}}
 ```
 
-`code` is one of `unregistered`, `frozen`, `sender_frozen`, `category`, `category_denied`, `lockin`, `holder_cap`, `velocity`, `vesting`, `pledged`, `not_whitelisted`, `receive_window`, `limit`, `sender_not_whitelisted`, `sender_locked`, or `rules` for anything else; a wallet chooses its words by it. `onboarding` comes with every refusal: the page the issuer set (`POST /v1/issuer/onboarding`), else `https://` plus the domain the issuance contract names, else absent. A missing `asset` or party is 400, an unknown asset or seller 404, a network-enforced asset with no published policy 409.
+With `-onboarding` set, a refusal also carries `operator_onboarding`, the operator's page, so a wallet can try the asset's registry entry between the asset's own page and the operator's. `code` is one of `unregistered`, `frozen`, `sender_frozen`, `category`, `category_denied`, `lockin`, `holder_cap`, `velocity`, `vesting`, `pledged`, `not_whitelisted`, `receive_window`, `limit`, `sender_not_whitelisted`, `sender_locked`, or `rules` for anything else; a wallet chooses its words by it. `onboarding` comes with every refusal: the page the issuer set (`POST /v1/issuer/onboarding`), else `https://` plus the domain the issuance contract names, else absent. A missing `asset` or party is 400, an unknown asset or seller 404, a network-enforced asset with no published policy 409.
 
 **`POST /v1/transfers`**, body:
 
@@ -124,6 +125,18 @@ The wallet signs each sighash with BIP340 Schnorr under its enclave key. Pending
 ```
 
 Witness stack for an enclave input, bottom to top: `<policy sig> <user sig> <leaf script> <control block>`.
+
+**Trades: check first, then let this server broadcast.** A trade of a restricted asset against another asset in one transaction (delivery against payment) goes through this endpoint in two steps.
+
+- **`POST /v1/check` first.** The same body, every check, and nothing signed, recorded or logged. A refusal costs nobody a signature.
+- **`/v1/cosign` with `"broadcast": true` once every party has signed.** This server then completes the sender's enclave inputs and broadcasts the transaction itself, so its signature never exists apart from a broadcast. The request adds three things:
+  - `user_sigs`: the sender's signature for each claimed input, keyed by index. This server checks each one against the sighash it computes.
+  - `expires_at`: a Unix time.
+  - `expiry_sig`: the sender's BIP340 signature over `tagged_hash("openamp-dvp-v1", txid || expires_at)`. Here `txid` is the 32 bytes of the displayed txid and `expires_at` is 8 bytes big-endian.
+
+  This server refuses the trade from `expires_at` on (403, code `expired`), so a trade the sender signed cannot be used after the time the sender chose. Every other input must arrive signed. The answer is `{"txid"}`, and the trade is recorded only once the node has taken it. A claim of a swap escrow is never broadcast this way, because its buyer adds the secret.
+
+`e2e/dvp.py` runs a trade through both steps against a node.
 
 ### Swap escrows: a restricted asset for on-chain BTC
 
@@ -476,6 +489,7 @@ Run against a node:
 | `-signer` | `local` (`OPENAMPD_SIGNER`) | policy-key backend: `local` (one key per asset) or `frost` (2-of-3 threshold quorum, DKG-generated keys; `OPENAMPD_FROST_KEYGEN=dealer` reverts to the trusted-dealer split) |
 | `-dampregistry` | (none) | path to the OpenDAMP CMR pinning file (`OPENAMPD_DAMP_REGISTRY`); unset disables network enforcement |
 | `-electrs` | `http://127.0.0.1:3003` (`OPENAMPD_ELECTRS_URL`) | explorer (electrs) base URL; prevout fallback for `/v1/cosign` when the node lacks `-txindex` |
+| `-onboarding` | `$OPENAMPD_ONBOARDING` | `"name|url"` of the operator's page where a holder an issuer has not approved asks to be approved; `GET /v1/eligibility` offers it as `operator_onboarding` beside the asset's own page |
 | `-arcaenclave` | `$OPENAMPD_ARCA_ENCLAVE` | path to `arca-enclave`, built from the arca repository, which reads the boards and transfers of an asset's tree; unset, no asset has a tree here and every tree call answers 501 |
 | `-follow` | `2s` | chain follower poll interval |
 

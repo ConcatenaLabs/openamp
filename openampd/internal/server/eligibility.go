@@ -28,6 +28,9 @@ type eligibility struct {
 	Code       string            `json:"code,omitempty"`
 	Reason     string            `json:"reason,omitempty"`
 	Onboarding *store.Onboarding `json:"onboarding,omitempty"`
+	// OperatorOnboarding is this server's operator's page, given beside the
+	// asset's own so a wallet can try the asset's registry entry in between.
+	OperatorOnboarding *store.Onboarding `json:"operator_onboarding,omitempty"`
 }
 
 // handleEligibility answers, before any money moves, whether a party may receive
@@ -99,6 +102,7 @@ func (s *Server) handleEligibility(w http.ResponseWriter, r *http.Request) {
 	}
 	if !out.Eligible {
 		out.Onboarding = onboardingFor(asset)
+		out.OperatorOnboarding = s.cfg.Onboarding
 	}
 	httpJSON(w, out)
 }
