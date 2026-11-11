@@ -53,7 +53,7 @@ def main():
     policy = compute_xonly_pubkey(det(2))[0]
     issuer = compute_xonly_pubkey(det(3))[0]
     seller_prog = compute_xonly_pubkey(det(5))[0]
-    asset = det(0x11)
+    asset = bytes(range(32))  # asymmetric, so a byte-order slip shows
     for name, t_seq, value, claw in (("escrow_claw", 1_794_423_273, 1_000_000, True),
                                      ("escrow_noclaw", 2_000_000_000, 128, False)):
         claim = CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY,
@@ -71,11 +71,11 @@ def main():
             "seller_program": seller_prog.hex(), "asset": asset.hex(), "value": value})
     for name, version, prog in (("pot_v0", 0, det(6, 20)), ("pot_v1", 1, det(7))):
         claim = CScript([OP_SIZE, 32, OP_EQUALVERIFY, OP_SHA256, h, OP_EQUALVERIFY, buyer, OP_CHECKSIG])
-        refund = CScript([1_794_423_273, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + pin(version, prog, det(0x22), 5000))
+        refund = CScript([1_794_423_273, OP_CHECKLOCKTIMEVERIFY, OP_DROP] + pin(version, prog, bytes(range(32, 64)), 5000))
         tap = taproot_construct(NUMS, [("claim", claim), ("refund", refund)])
         out[name] = described(tap, ["claim", "refund"], {
             "hash": h.hex(), "buyer_x": buyer.hex(), "t_seq": 1_794_423_273,
-            "seller_version": version, "seller_program": prog.hex(), "fee_asset": det(0x22).hex(), "value": 5000})
+            "seller_version": version, "seller_program": prog.hex(), "fee_asset": bytes(range(32, 64)).hex(), "value": 5000})
     print(json.dumps(out, indent=1, sort_keys=True))
 
 
