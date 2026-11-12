@@ -119,11 +119,6 @@ type Asset struct {
 	// Absent while the token has not moved in (assets issued before supply
 	// caps, until their token is moved), and then the asset cannot be minted.
 	SupplyCap *SupplyCap `json:"supply_cap,omitempty"`
-	// Tree is set once the issuer enables the asset's tree (POST
-	// /v1/issuer/tree): holdings may then sit in enclave-1 leaves of the
-	// operator it names, reassigned off the chain under the same rules. Absent
-	// on every asset that never enabled one, so those records are unchanged.
-	Tree *TreeTerms `json:"tree,omitempty"`
 	// Onboarding is where someone the issuer has not approved yet goes to be
 	// approved: the issuer's name and a page. The issuer sets it (POST
 	// /v1/issuer/onboarding) and GET /v1/eligibility returns it with every
@@ -237,9 +232,7 @@ type VerifierToken struct {
 }
 
 // TransferRecord supports velocity accounting; entries above a reorged-out
-// height are re-marked unconfirmed by the follower. A record of kind "tree" is
-// an off-chain reassignment in the asset's tree: it has no txid, carries the
-// height it was approved at, and the follower never touches it.
+// height are re-marked unconfirmed by the follower.
 type TransferRecord struct {
 	Txid      string `json:"txid"`
 	Asset     string `json:"asset"`
@@ -247,7 +240,7 @@ type TransferRecord struct {
 	Atoms     uint64 `json:"atoms"`
 	Height    int64  `json:"height"` // -1 while unconfirmed
 	Kind      string `json:"kind,omitempty"`
-	ID        string `json:"id,omitempty"` // the tree transfer, for kind "tree"; the HTLC's outpoint (txid:vout), for kind "htlc-claim"
+	ID        string `json:"id,omitempty"` // the HTLC's outpoint (txid:vout), for kind "htlc-claim"
 	// Inputs are the transaction's input outpoints (txid:vout). An unconfirmed
 	// record counts toward the sender's velocity until one of them is spent
 	// in a block by another transaction, which makes this one impossible: a
@@ -379,11 +372,6 @@ type State struct {
 	// seq order (index == seq; the snapshot service enforces gapless append).
 	// Absent on documents written before M2; initialised on load.
 	Snapshots map[string][]*StoredSnapshot `json:"snapshots,omitempty"`
-	// TreeLeaves is the register of enclave-1 leaves, keyed by salt (hex), and
-	// TreeTransfers the reassignments approved among them, by id. Absent on
-	// documents written before trees existed; initialised on load.
-	TreeLeaves    map[string]*TreeLeaf     `json:"tree_leaves,omitempty"`
-	TreeTransfers map[string]*TreeTransfer `json:"tree_transfers,omitempty"`
 	// HTLCs are the swap HTLCs this server admitted (a restricted asset
 	// traded for on-chain BTC), keyed by their scriptPubKey (hex). Each is its
 	// seller's coin until claimed. Absent on older documents; initialised on load.
@@ -458,12 +446,6 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.state.DampPolicies == nil {
 		s.state.DampPolicies = map[string]string{}
-	}
-	if s.state.TreeLeaves == nil {
-		s.state.TreeLeaves = map[string]*TreeLeaf{}
-	}
-	if s.state.TreeTransfers == nil {
-		s.state.TreeTransfers = map[string]*TreeTransfer{}
 	}
 	if s.state.HTLCs == nil {
 		s.state.HTLCs = map[string]*HTLC{}

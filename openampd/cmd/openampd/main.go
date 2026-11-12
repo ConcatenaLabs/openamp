@@ -38,7 +38,7 @@ func main() {
 		capColdKey  = flag.String("capcoldkey", os.Getenv("OPENAMPD_CAP_COLD_KEY"), "default cold key (x-only hex) of a new supply cap: the key, kept off this server, that can replace its operator key")
 		capOpKey    = flag.String("capoperatorkey", "", "this server's supply-cap operator key file (default <datadir>/cap-operator.key, made on first start)")
 		onboarding  = flag.String("onboarding", os.Getenv("OPENAMPD_ONBOARDING"), "\"name|url\" of the page where a holder this server's issuers have not approved asks for approval, for an asset that names none of its own")
-		arcaEnclave = flag.String("arcaenclave", os.Getenv("OPENAMPD_ARCA_ENCLAVE"), "path to arca-enclave (built from the arca repository: cargo install --path covenant --bin arca-enclave), which reads the boards and transfers of an asset's tree; unset, no asset has a tree here")
+		arcaEnclave = retiredArcaEnclave(flag.CommandLine)
 	)
 	flag.Parse()
 
@@ -92,7 +92,7 @@ func main() {
 		FeeAsset: *feeAsset, FeeSats: *feeSats, DemoIssuer: *demoIssuer,
 		ElectrsURL: *electrsURL, Signer: *signerName, DampRegistry: *dampReg,
 		TokenTool: *tokenTool, CapOperatorKeyFile: *capOpKey, CapColdKey: *capColdKey,
-		ArcaEnclave: *arcaEnclave, Onboarding: parseOnboarding(*onboarding),
+		Onboarding: parseOnboarding(*onboarding),
 	}, st, node, wallet)
 	if err != nil {
 		log.Fatal(err)
@@ -110,8 +110,8 @@ func main() {
 	if *dampReg != "" {
 		log.Printf("network enforcement configured from %s", *dampReg)
 	}
-	if *arcaEnclave != "" {
-		log.Printf("asset trees read through %s", *arcaEnclave)
+	if note := arcaEnclaveNote(*arcaEnclave); note != "" {
+		log.Print(note)
 	}
 	feeLine := "each transaction's fee asset by the wallet rule"
 	if *feeAsset != "" {
@@ -164,4 +164,21 @@ func parseOnboarding(v string) *store.Onboarding {
 		log.Fatalf("-onboarding: %q is not \"name|http(s) url\"", v)
 	}
 	return &store.Onboarding{Name: name, URL: u}
+}
+
+// retiredArcaEnclave registers -arcaenclave ($OPENAMPD_ARCA_ENCLAVE), which is
+// accepted and ignored: the flag package exits on a flag it does not know, so
+// a unit that still passes it must go on starting.
+func retiredArcaEnclave(fs *flag.FlagSet) *string {
+	return fs.String("arcaenclave", os.Getenv("OPENAMPD_ARCA_ENCLAVE"),
+		"accepted and ignored ("+server.EnclaveRetired+")")
+}
+
+// arcaEnclaveNote is the one log line a set -arcaenclave gets, or "" when it
+// is unset.
+func arcaEnclaveNote(value string) string {
+	if value == "" {
+		return ""
+	}
+	return "-arcaenclave " + value + " is ignored: " + server.EnclaveRetired
 }
